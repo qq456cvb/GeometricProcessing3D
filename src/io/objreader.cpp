@@ -56,7 +56,7 @@ inline void safe_get_line(std::istream &is, std::string &t) {
 
 template <typename T>
 static auto parse_single_value(const char *&str) {
-    char *end;
+    static char *end;
     if constexpr (std::is_floating_point<T>::value) {
         float res = static_cast<float>(std::strtod(str, &end));
         str = end;
@@ -97,10 +97,21 @@ static inline std::array<T, 3> parse_triplet_direct(const char *&str) {
 }
 
 
-ObjReader::ObjReader(const char *fn)
+ObjReader::ObjReader()
+{
+}
+
+ObjReader::~ObjReader()
+{
+}
+
+std::shared_ptr<TriangleMesh> ObjReader::read_mesh(const char *fn)
 {
     auto stream = get_raw_buffer(fn);
     std::string line_buf;
+    
+    std::vector<xyz> verts;
+    std::vector<face_idx_t> face_idxs;
     while (stream.peek() != EOF)
     {
         safe_get_line(stream, line_buf);
@@ -112,21 +123,20 @@ ObjReader::ObjReader(const char *fn)
         if (line[0] == 'v' && line[1] == ' ') {
             line++;
             auto xyz = parse_triplet_direct<float>(line);
-            for (auto v : xyz) verts.push_back(v);
+            verts.push_back(xyz);
             printf("x: %f, y: %f, z: %f\n", xyz[0], xyz[1], xyz[2]);
         } else if (line[0] == 'f') {
             line++;
             auto f1 = parse_triplet<int>(line);
             auto f2 = parse_triplet<int>(line);
             auto f3 = parse_triplet<int>(line);
-            face_idxs.emplace_back(f1[0] - 1, f1[1] - 1, f1[2] - 1);
-            face_idxs.emplace_back(f2[0] - 1, f2[1] - 1, f2[2] - 1);
-            face_idxs.emplace_back(f3[0] - 1, f3[1] - 1, f3[2] - 1);
+            face_idx_t f;
+            f.vs = {f1[0] - 1, f2[0] - 1, f3[0] - 1};
+            f.ns = {f1[1] - 1, f2[1] - 1, f3[1] - 1};
+            f.ts = {f1[2] - 1, f2[2] - 1, f3[2] - 1};
+            face_idxs.push_back(f);
         }
     }
-    
-}
 
-ObjReader::~ObjReader()
-{
+    return std::make_shared<TriangleMesh>(std::move(verts), std::move(face_idxs));
 }

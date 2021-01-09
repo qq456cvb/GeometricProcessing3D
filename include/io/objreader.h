@@ -2,16 +2,16 @@
 #define OBJREADER_H
 
 #include <armadillo>
+#include "geometry/trianglemesh.h"
 
-using face_idx_t = std::tuple<int, int, int>;
 class ObjReader
 {
 private:
-    std::vector<float> verts;
-    std::vector<face_idx_t> face_idxs;
+    
 public:
-    ObjReader(const char *fn);
+    ObjReader();
     ~ObjReader();
+    std::shared_ptr<TriangleMesh> read_mesh(const char *fn);
 };
 
 #endif
