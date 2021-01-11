@@ -3,7 +3,8 @@
 
 int main(int argc, char *argv[]) {
     auto reader = std::make_shared<ObjReader>();
-    auto mesh = reader->read_mesh("../examples/data/test.obj");
+    auto mesh = reader->read_mesh("../examples/data/bunny.obj");
+    auto dist = mesh->geodesic(std::vector{3});
 
     return 0;
 }
