@@ -114,7 +114,7 @@ std::vector<float> TriangleMesh::geodesic(const std::vector<int> &source) {
     if (e2f_nbrs.empty()) e2f_nbrs = build_e2f_nbrs(this->verts, this->face_idxs);
     if (face_ns.empty()) face_ns = build_face_ns(this->verts, this->face_idxs);
 
-    arma::fvec u0(verts.size());
+    arma::fvec u0(verts.size(), arma::fill::zeros);
     u0.resize(verts.size());
     for (const auto &s : source) {
         u0(s) = 1.f;
@@ -125,7 +125,7 @@ std::vector<float> TriangleMesh::geodesic(const std::vector<int> &source) {
         const auto &edge = nbrs.first;
         int i = edge.first, j = edge.second;
         const auto &faces = nbrs.second;
-        for (size_t c = 0; c < 2; c++) {
+        for (size_t c = 0; c < faces.size(); c++) {
             for (auto v : face_idxs[faces[c]].vs) {
                 if (v != i && v != j) {
                     arma::fvec vi = ARMA_FVEC3(verts[i]) - ARMA_FVEC3(verts[v]);
@@ -161,23 +161,26 @@ std::vector<float> TriangleMesh::geodesic(const std::vector<int> &source) {
     t *= t;
 
     arma::fvec u = arma::spsolve(A - t * L, u0);
-    printf("umax: %f, umin: %f\n", u.max(), u.min());
-    arma::fmat grad_u(face_idxs.size(), 3);
+    // std::cout << u << std::endl;
+    arma::fmat grad_u(face_idxs.size(), 3, arma::fill::zeros);
     for (size_t i = 0; i < face_idxs.size(); i++) {
         const auto &vs = face_idxs[i].vs;
         arma::fvec3 grad;
+        grad.fill(0);
         for (size_t j = 0; j < 3; j++) {
             int v1_idx = vs[j];
             int v2_idx = vs[(j + 1) % 3];
             int v3_idx = vs[(j + 2) % 3];
             arma::fvec edge = ARMA_FVEC3(verts[v2_idx]) - ARMA_FVEC3(verts[v1_idx]);
+            // std::cout << arma::cross(ARMA_FVEC3(face_ns[i]), edge) << std::endl;
             grad += u(v3_idx) * arma::cross(ARMA_FVEC3(face_ns[i]), edge);
         }
         grad_u.row(i) = -arma::normalise(grad / (2.f * areas[i])).t();
     }
 
+    // std::cout << grad_u << std::endl;
     // maybe speedup by precompute angles
-    arma::fvec div(verts.size());
+    arma::fvec div(verts.size(), arma::fill::zeros);
     for (size_t i = 0; i < verts.size(); i++) {
         float sum = 0;
         for (auto f_idx : v2f_nbrs[i]) {
@@ -200,8 +203,12 @@ std::vector<float> TriangleMesh::geodesic(const std::vector<int> &source) {
         }
         div(i) = sum;
     }
-
+    // std::cout << arma::fmat(L) << std::endl;
+    // std::cout << arma::cond(arma::fmat(L)) << std::endl;
+    // std::cout << div << std::endl;
     arma::fvec phi = arma::spsolve(L, div);
+    std::cout << phi << std::endl;
     std::vector<float> res{phi.begin(), phi.end()};
+    
     return res;
 }
