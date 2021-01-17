@@ -124,7 +124,7 @@ std::shared_ptr<TriangleMesh> ObjReader::read_mesh(const char *fn)
             line++;
             auto xyz = parse_triplet_direct<float>(line);
             verts.push_back(xyz);
-            printf("x: %f, y: %f, z: %f\n", xyz[0], xyz[1], xyz[2]);
+            // printf("x: %f, y: %f, z: %f\n", xyz[0], xyz[1], xyz[2]);
         } else if (line[0] == 'f') {
             line++;
             auto f1 = parse_triplet<int>(line);
