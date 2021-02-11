@@ -160,7 +160,7 @@ std::vector<float> TriangleMesh::geodesic(const std::vector<int> &source) {
     t /= e2f_nbrs.size();
     t *= t;
 
-    arma::fvec u = arma::spsolve(A - t * L, u0);
+    arma::fvec u = arma::spsolve(A - t * L, u0, "lapack");
     arma::fmat grad_u(face_idxs.size(), 3, arma::fill::zeros);
     for (size_t i = 0; i < face_idxs.size(); i++) {
         const auto &vs = face_idxs[i].vs;

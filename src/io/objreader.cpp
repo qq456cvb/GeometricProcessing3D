@@ -140,3 +140,31 @@ std::shared_ptr<TriangleMesh> ObjReader::read_mesh(const char *fn)
 
     return std::make_shared<TriangleMesh>(std::move(verts), std::move(face_idxs));
 }
+
+std::shared_ptr<PointCloud> ObjReader::read_cloud(const char *fn)
+{
+    auto stream = get_raw_buffer(fn);
+    std::string line_buf;
+    
+    std::vector<xyz> verts;
+    std::vector<face_idx_t> face_idxs;
+    bool data_start = false;
+    while (stream.peek() != EOF)
+    {
+        safe_get_line(stream, line_buf);
+        line_buf.erase(line_buf.begin(), std::find_if(line_buf.begin(), line_buf.end(), [](char ch) {
+            return ch != ' ' && ch != '\t';
+        }));
+
+        if (!data_start) {
+            if (line_buf.substr(0, 10) != "DATA ascii") continue;
+            data_start = true;
+            continue;
+        }
+        const char *line = line_buf.c_str();
+        auto xyz = parse_triplet_direct<float>(line);
+        verts.push_back(xyz);
+    }
+
+    return std::make_shared<PointCloud>(std::move(verts));
+}

@@ -11,6 +11,7 @@ typedef struct {
     std::array<int, 3> ns;
     std::array<int, 3> ts;
 } face_idx_t;
+
 typedef std::unordered_map<std::pair<int, int>, std::vector<int>, std::function<size_t(std::pair<int, int>)>, 
         std::function<bool(std::pair<int, int>, std::pair<int, int>)>> pair_map;
 

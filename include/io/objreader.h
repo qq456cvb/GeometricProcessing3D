@@ -3,6 +3,7 @@
 
 #include <armadillo>
 #include "geometry/trianglemesh.h"
+#include "geometry/pointcloud.h"
 
 class ObjReader
 {
@@ -12,6 +13,7 @@ public:
     ObjReader();
     ~ObjReader();
     std::shared_ptr<TriangleMesh> read_mesh(const char *fn);
+    std::shared_ptr<PointCloud> read_cloud(const char *fn);
 };
 
 #endif
