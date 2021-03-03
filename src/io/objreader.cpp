@@ -97,6 +97,27 @@ static inline std::array<T, 3> parse_triplet_direct(const char *&str) {
 }
 
 
+static inline std::string parse_word(const char *&str) {
+    while (*str++ == ' ') ;
+    str--;
+    if (*str == '\0') return "";
+
+    std::string result;
+    char ch;
+    while ((ch = *str++) != ' ') {
+        result += ch;
+    }
+    return result;
+}
+
+static inline std::array<std::string, 3> parse_triplet_word(const char *&str) {
+    auto w1 = parse_word(str);
+    auto w2 = parse_word(str);
+    auto w3 = parse_word(str);
+    return {w1, w2, w3};
+}
+
+
 ObjReader::ObjReader()
 {
 }
@@ -146,9 +167,9 @@ std::shared_ptr<PointCloud> ObjReader::read_cloud(const char *fn)
     auto stream = get_raw_buffer(fn);
     std::string line_buf;
     
-    std::vector<xyz> verts;
+    std::vector<xyz> verts, normals;
     std::vector<face_idx_t> face_idxs;
-    bool data_start = false;
+    bool data_start = false, has_normal = false;
     while (stream.peek() != EOF)
     {
         safe_get_line(stream, line_buf);
@@ -157,14 +178,29 @@ std::shared_ptr<PointCloud> ObjReader::read_cloud(const char *fn)
         }));
 
         if (!data_start) {
+            if (line_buf.substr(0, 6) == "FIELDS") {
+                const char *ptr = line_buf.c_str() + 6;
+                auto xyz_fields = parse_triplet_word(ptr);
+                if (xyz_fields.size() < 3 || xyz_fields[0] != "x" || xyz_fields[1] != "y" || xyz_fields[2] != "z") {
+                    printf("No xyz fields!!!\n");
+                    break;
+                }
+                auto next = parse_word(ptr);
+                if (next == "normal_x") has_normal = true;
+                // TODO: check if next two words are normal_y, normal_z
+            }
             if (line_buf.substr(0, 10) != "DATA ascii") continue;
             data_start = true;
             continue;
         }
         const char *line = line_buf.c_str();
         auto xyz = parse_triplet_direct<float>(line);
+        if (has_normal) {
+            auto xyz_n = parse_triplet_direct<float>(line);
+            normals.push_back(xyz_n);
+        }
         verts.push_back(xyz);
     }
 
-    return std::make_shared<PointCloud>(std::move(verts));
+    return std::make_shared<PointCloud>(std::move(verts), std::move(normals));
 }

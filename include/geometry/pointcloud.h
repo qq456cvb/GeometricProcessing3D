@@ -10,10 +10,12 @@ class PointCloud
 {
 private:
     std::vector<xyz> verts;
+    std::vector<xyz> normals;
 public:
     PointCloud();
     ~PointCloud();
     PointCloud(std::vector<xyz> &&v);
+    PointCloud(std::vector<xyz> &&v, std::vector<xyz> &&n);
 };
 
 #endif
