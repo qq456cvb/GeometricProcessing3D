@@ -9,9 +9,9 @@ using xyz = std::array<float, 3>;
 class PointCloud
 {
 private:
+public:
     std::vector<xyz> verts;
     std::vector<xyz> normals;
-public:
     PointCloud();
     ~PointCloud();
     PointCloud(std::vector<xyz> &&v);
