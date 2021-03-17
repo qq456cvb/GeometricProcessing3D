@@ -143,6 +143,16 @@ struct TransXKernel
     }
 };
 
+template <typename T>
+void reduce_by_key(const thrust::device_vector<T> &keys, thrust::device_vector<T> &unique_keys, thrust::device_vector<uint32_t> &counts) {
+    thrust::equal_to<T> binary_pred;
+    thrust::plus<uint32_t> binary_op;
+    counts.resize(keys.size());
+    unique_keys.resize(keys.size());
+    auto end = thrust::reduce_by_key(keys.begin(), keys.end(), thrust::make_constant_iterator(1), unique_keys.begin(), counts.begin(), binary_pred, binary_op);
+    unique_keys.resize(thrust::distance(unique_keys.begin(), end.first));
+    counts.resize(thrust::distance(counts.begin(), end.second));
+}
 
 
 PPF::PPF(const float &dist_delta, const float &angle_delta) :
@@ -209,17 +219,7 @@ void PPF::setup_model(const PointCloud &model) {
         hash_keys_ptr[i] = static_cast<uint32_t>(ppf_codes_ptr[i] >> 32);
     });
 
-    thrust::equal_to<uint32_t> binary_pred;
-    thrust::plus<uint32_t> binary_op;
-    ppf_count.resize(hash_keys.size());
-    unique_hash_keys.resize(hash_keys.size());
-    // printf("size before: %ld\n", hash_keys.size());
-    // printf("%u\n", thrust::reduce(ppf_count.begin(), ppf_count.end(), 0, thrust::maximum<uint32_t>()));
-    auto end = thrust::reduce_by_key(hash_keys.begin(), hash_keys.end(), thrust::make_constant_iterator(1), unique_hash_keys.begin(), ppf_count.begin(), binary_pred, binary_op);
-    unique_hash_keys.resize(thrust::distance(unique_hash_keys.begin(), end.first));
-    ppf_count.resize(thrust::distance(ppf_count.begin(), end.second));
-    // printf("size after: %ld\n", unique_hash_keys.size());
-    // printf("%u\n", thrust::reduce(ppf_count.begin(), ppf_count.end(), 0, thrust::maximum<uint32_t>()));
+    reduce_by_key<uint32_t>(hash_keys, model_hash_keys, ppf_count);
 
     first_ppf_idx.resize(ppf_count.size());
     thrust::exclusive_scan(ppf_count.begin(), ppf_count.end(), first_ppf_idx.begin());
@@ -227,5 +227,55 @@ void PPF::setup_model(const PointCloud &model) {
 
 
 void PPF::detect(const PointCloud &scene) {
+    thrust::device_vector<float3> pc(reinterpret_cast<const float3*>(&(*scene.verts.begin())), reinterpret_cast<const float3*>(&(*scene.verts.end())));
+    thrust::device_vector<float3> pc_normal(reinterpret_cast<const float3*>(&(*scene.normals.begin())), reinterpret_cast<const float3*>(&(*scene.normals.end())));
 
+    int npoints = static_cast<int>(pc.size());
+    int n_angle_bins = static_cast<int>(2.0000001 * M_PI / angle_delta);
+
+    thrust::device_vector<float> transforms{npoints * 9, 0};
+    TransXKernel transx_kern(pc_normal, transforms);
+    thrust::for_each_n(thrust::counting_iterator<size_t>(0), pc_normal.size(), transx_kern);
+
+    thrust::device_vector<uint64_t> ppf_codes{npoints * npoints, 0};
+    PPFKernel ppf_kern(pc, pc_normal, transforms, ppf_codes, npoints, dist_delta, angle_delta);
+    thrust::for_each_n(thrust::counting_iterator<size_t>(0), ppf_codes.size(), ppf_kern);
+
+    thrust::device_vector<uint32_t> hash_keys{ppf_codes.size(), 0};
+    uint32_t *hash_keys_ptr = thrust::raw_pointer_cast(hash_keys.data());
+    uint64_t *ppf_codes_ptr = thrust::raw_pointer_cast(ppf_codes.data());
+    thrust::for_each_n(thrust::counting_iterator<size_t>(0), ppf_codes.size(), [=] __device__ (int i) {
+        hash_keys_ptr[i] = static_cast<uint32_t>(ppf_codes_ptr[i] >> 32);
+    });
+
+    thrust::device_vector<uint32_t> nn_idx{hash_keys.size(), 0};  // uint32 big enough?
+    thrust::lower_bound(model_hash_keys.begin(), model_hash_keys.end(), hash_keys.begin(), hash_keys.end(), nn_idx.begin());
+
+    uint32_t *first_ppf_idx_ptr = thrust::raw_pointer_cast(first_ppf_idx.data());
+    uint32_t *nn_idx_ptr = thrust::raw_pointer_cast(nn_idx.data());
+    uint32_t *key2ppf_ptr = thrust::raw_pointer_cast(key2ppf.data());
+    uint64_t *model_ppf_codes_ptr = thrust::raw_pointer_cast(model_ppf_codes.data());
+    thrust::device_vector<uint64_t> votes{nn_idx.size(), 0};
+    uint64_t *votes_ptr = thrust::raw_pointer_cast(votes.data());
+
+    thrust::for_each_n(thrust::counting_iterator<size_t>(0), nn_idx.size(), [=] __device__ (int i) {
+        uint32_t model_ppf_idx = first_ppf_idx_ptr[nn_idx_ptr[i]];
+        uint32_t model_idx = key2ppf_ptr[model_ppf_idx];
+        uint32_t scene_idx = static_cast<uint32_t>(0xffffffc0 & ppf_codes_ptr[i]);
+        int scene_angle_bin = static_cast<int>(63 & ppf_codes_ptr[i]);
+        int model_angle_bin = static_cast<int>(63 & model_ppf_codes_ptr[model_ppf_idx]);
+        int angle_bin = scene_angle_bin - model_angle_bin;
+        if (angle_bin < 0) angle_bin += n_angle_bins;
+        votes_ptr[i] = (static_cast<uint64_t>(scene_idx) << 32) |
+            (static_cast<uint64_t>(model_idx) << 6) |
+            static_cast<uint64_t>(angle_bin);
+    });
+
+    thrust::sort(votes.begin(), votes.end());
+
+    thrust::device_vector<uint64_t> unique_votes;
+    thrust::device_vector<uint32_t> vote_counts;
+    reduce_by_key<uint64_t>(votes, unique_votes, vote_counts);
+
+    printf("max votes: %u\n", thrust::reduce(vote_counts.begin(), vote_counts.end(), 0, thrust::maximum<uint32_t>()));
 }

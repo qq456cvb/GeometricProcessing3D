@@ -11,5 +11,6 @@ int main(int argc, char *argv[]) {
 
     auto ppf = std::make_shared<PPF>(0.01f, 12.0f / 180.0f * static_cast<float>(M_PI));
     ppf->setup_model(*pc);
+    ppf->detect(*pc);
     return 0;
 }
