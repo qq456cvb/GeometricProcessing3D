@@ -6,6 +6,7 @@
 #include <thrust/device_vector.h>
 #include <cuda_runtime.h>
 #include <math.h>
+#include <armadillo>
 class PPF
 {
 private:
@@ -16,6 +17,7 @@ private:
     float dist_delta, angle_delta;
     float cluster_dist_th = 0.3f, cluster_angle_th = 15.f / 180.f * M_PI;
     int min_vote_th = 5;
+    arma::fvec3 model_center;
 public:
     PPF(const float &dist_delta, const float &angle_delta);
     ~PPF();

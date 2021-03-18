@@ -148,9 +148,10 @@ struct TransXKernel
 struct Pose
 {
     arma::fmat33 r;
+    arma::fvec3 t;
     uint32_t vote;
-    Pose(const arma::fmat33 &r, const uint32_t &vote) :
-        r(r), vote(vote) {}
+    Pose(const arma::fmat33 &r, const arma::fvec3 &t, const uint32_t &vote) :
+        r(r), t(t), vote(vote) {}
 };
 
 
@@ -182,6 +183,14 @@ void PPF::setup_model(const PointCloud &model) {
     model_pc_normal = thrust::device_vector<float3>(reinterpret_cast<const float3*>(&(*model.normals.begin())), reinterpret_cast<const float3*>(&(*model.normals.end())));
     // float3 *pc_ptr = thrust::raw_pointer_cast(model_pc.data());
     // float3 *pc_normal_ptr = thrust::raw_pointer_cast(model_pc_normal.data());
+    std::array<float, 3> center = {0, 0, 0};
+    for (const auto &v : model.verts) {
+        center[0] += v[0];
+        center[1] += v[1];
+        center[2] += v[2];
+    } 
+    model_center = {center[0] / model.verts.size(), center[1] / model.verts.size(), center[2] / model.verts.size()};
+    
     int npoints = static_cast<int>(model_pc.size());
 
     model_transforms.resize(npoints * 9);
@@ -278,18 +287,26 @@ void PPF::detect(const PointCloud &scene) {
     auto start = std::chrono::high_resolution_clock::now();
     thrust::host_vector<float> h_model_transforms(model_transforms);
     thrust::host_vector<float> h_scene_transforms(transforms);
+
+    // for (int i = 0; i < 10; i++) {
+    //     printf("x y z: %f, %f, %f\n", h_model_transforms[i * 9], h_model_transforms[i * 9 + 1], h_model_transforms[i * 9 + 2]);
+    // }
+
     thrust::host_vector<uint32_t> h_vote_counts(vote_counts);
     thrust::host_vector<uint64_t> h_votes(unique_votes);
+    thrust::host_vector<float3> h_model_pc(model_pc);
+    thrust::host_vector<float3> h_scene_pc(pc);
     uint32_t curr_scene_idx = static_cast<uint32_t>(h_votes[0] >> 32), curr_vote = 0;
-    arma::fmat33 curr_trans;
+    arma::fmat33 curr_r;
+    arma::fvec3 curr_t;
     std::vector<Pose> poses;
     for (size_t i = 0; i < h_votes.size(); i++)
     {
         uint32_t scene_idx = static_cast<uint32_t>(h_votes[i] >> 32);
         uint32_t vote = h_vote_counts[i];
         if (scene_idx != curr_scene_idx) {
-            if (curr_vote > min_vote_th && curr_trans.is_finite() && arma::accu(arma::abs(curr_trans)) > 1e-3) {
-                poses.emplace_back(curr_trans, curr_vote);
+            if (curr_vote > min_vote_th && curr_r.is_finite() && arma::accu(arma::abs(curr_r)) > 1e-3) {
+                poses.emplace_back(curr_r, curr_t, curr_vote);
             }
             curr_vote = 0;
             curr_scene_idx = scene_idx;
@@ -297,9 +314,13 @@ void PPF::detect(const PointCloud &scene) {
             if (vote > curr_vote) {
                 uint32_t model_idx = static_cast<uint32_t>(0x3FFFFFF & h_votes[i] >> 6);
                 curr_vote = vote;
-                arma::fmat33 model_trans = arma::fmat(const_cast<float *>(&h_model_transforms[i * 9]), 3, 3, false, true);
-                arma::fmat33 scene_trans = arma::fmat(const_cast<float *>(&h_scene_transforms[i * 9]), 3, 3, false, true);
-                curr_trans = scene_trans.t() * model_trans;
+                arma::fmat model_trans(const_cast<float *>(&h_model_transforms[model_idx * 9]), 3, 3, true);  // col major
+                arma::fmat scene_trans(const_cast<float *>(&h_scene_transforms[scene_idx * 9]), 3, 3, true);
+                curr_r = scene_trans * model_trans.t();
+                // strange: buggy below
+                arma::fvec p2((float *)(&h_scene_pc[scene_idx]), 3, false, true);
+                arma::fvec p1((float *)(&h_model_pc[model_idx]), 3, false, true);
+                curr_t = p2 - curr_r.t().t() * p1;  // strange armadillo bug: must use t() twice
             }
         }
     }
@@ -322,7 +343,7 @@ void PPF::detect(const PointCloud &scene) {
         bool found_cluster = false;
         for (auto& cluster : pose_clusters) {
             for (auto &cpose : cluster.second) {
-                if (acosf(arma::trace(pose.r.t() * cpose.r) * .5f - .5f) < cluster_angle_th) {
+                if (arma::norm(pose.t - cpose.t) < cluster_dist_th && acosf(arma::trace(pose.r.t() * cpose.r) * .5f - .5f) < cluster_angle_th) {
                     found_cluster = true;
                     cluster.second.push_back(pose);
                     cluster.first += pose.vote;
@@ -343,10 +364,12 @@ void PPF::detect(const PointCloud &scene) {
         return c1.first > c2.first;
     });
 
+    // TODO: merge cluster poses
     printf("final pose clusters: %lu\n", pose_clusters.size());
     for (size_t i = 0; i < 5; i++)
     {
         std::cout << pose_clusters[i].second[0].r << std::endl;
+        std:: cout << pose_clusters[i].second[0].t << std::endl;
     }
     
 

@@ -5,6 +5,12 @@ PointCloud::PointCloud()
 {
 }
 
+PointCloud::PointCloud(const PointCloud &pc)
+{
+    this->verts = pc.verts;
+    this->normals = pc.normals;
+}
+
 PointCloud::~PointCloud()
 {
 }

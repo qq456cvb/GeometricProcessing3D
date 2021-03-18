@@ -13,6 +13,7 @@ public:
     std::vector<xyz> verts;
     std::vector<xyz> normals;
     PointCloud();
+    PointCloud(const PointCloud &pc);
     ~PointCloud();
     PointCloud(std::vector<xyz> &&v);
     PointCloud(std::vector<xyz> &&v, std::vector<xyz> &&n);
