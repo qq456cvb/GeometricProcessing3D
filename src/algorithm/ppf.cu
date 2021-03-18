@@ -2,6 +2,7 @@
 #include <cuda_runtime.h>
 #include "utils/helper_math.h"
 #include <armadillo>
+#include <chrono>
 
 #include <thrust/sort.h>
 #include <thrust/scan.h>
@@ -143,6 +144,16 @@ struct TransXKernel
     }
 };
 
+
+struct Pose
+{
+    arma::fmat33 r;
+    uint32_t vote;
+    Pose(const arma::fmat33 &r, const uint32_t &vote) :
+        r(r), vote(vote) {}
+};
+
+
 template <typename T>
 void reduce_by_key(const thrust::device_vector<T> &keys, thrust::device_vector<T> &unique_keys, thrust::device_vector<uint32_t> &counts) {
     thrust::equal_to<T> binary_pred;
@@ -177,24 +188,6 @@ void PPF::setup_model(const PointCloud &model) {
     // float *transforms_ptr = thrust::raw_pointer_cast(transforms.data());
     TransXKernel transx_kern(model_pc_normal, model_transforms);
     thrust::for_each_n(thrust::counting_iterator<size_t>(0), model_pc_normal.size(), transx_kern);
-    // thrust::for_each_n(thrust::counting_iterator<size_t>(0), pc_normal.size(), [=] __device__ (int i) {
-    //     const auto &n = pc_normal_ptr[i];
-    //     auto y2 = n.y * n.y;
-    //     auto z2 = n.z * n.z;
-    //     auto yz = n.y * n.z;
-    //     auto y2z2 = y2 + z2;
-
-    //     // TODO: what if y2z2 == 0
-    //     transforms_ptr[i * 9] = n.x;
-    //     transforms_ptr[i * 9 + 1] = n.y;
-    //     transforms_ptr[i * 9 + 2] = n.z;
-    //     transforms_ptr[i * 9 + 3] = -n.y;
-    //     transforms_ptr[i * 9 + 4] = 1 + (n.x - 1) * y2 / y2z2;
-    //     transforms_ptr[i * 9 + 5] = (n.x - 1) * yz / y2z2;
-    //     transforms_ptr[i * 9 + 6] = -n.z;
-    //     transforms_ptr[i * 9 + 7] = transforms_ptr[i * 9 + 5];
-    //     transforms_ptr[i * 9 + 8] = 1 + (n.x - 1) * z2 / y2z2;
-    // });
 
     // thrust::host_vector<float> h_transforms(transforms);
     // for (size_t i = 0; i < 10; i++) {
@@ -215,7 +208,7 @@ void PPF::setup_model(const PointCloud &model) {
     uint32_t *hash_keys_ptr = thrust::raw_pointer_cast(hash_keys.data());
     uint64_t *ppf_codes_ptr = thrust::raw_pointer_cast(model_ppf_codes.data());
     thrust::for_each_n(thrust::counting_iterator<size_t>(0), model_ppf_codes.size(), [=] __device__ (int i) {
-        key2ppf_ptr[i] = static_cast<uint32_t>(0xffffffc0 & ppf_codes_ptr[i]);
+        key2ppf_ptr[i] = static_cast<uint32_t>(0x3FFFFFF & ppf_codes_ptr[i] >> 6);
         hash_keys_ptr[i] = static_cast<uint32_t>(ppf_codes_ptr[i] >> 32);
     });
 
@@ -227,6 +220,7 @@ void PPF::setup_model(const PointCloud &model) {
 
 
 void PPF::detect(const PointCloud &scene) {
+    // TODO: filter points and pairs
     thrust::device_vector<float3> pc(reinterpret_cast<const float3*>(&(*scene.verts.begin())), reinterpret_cast<const float3*>(&(*scene.verts.end())));
     thrust::device_vector<float3> pc_normal(reinterpret_cast<const float3*>(&(*scene.normals.begin())), reinterpret_cast<const float3*>(&(*scene.normals.end())));
 
@@ -261,7 +255,7 @@ void PPF::detect(const PointCloud &scene) {
     thrust::for_each_n(thrust::counting_iterator<size_t>(0), nn_idx.size(), [=] __device__ (int i) {
         uint32_t model_ppf_idx = first_ppf_idx_ptr[nn_idx_ptr[i]];
         uint32_t model_idx = key2ppf_ptr[model_ppf_idx];
-        uint32_t scene_idx = static_cast<uint32_t>(0xffffffc0 & ppf_codes_ptr[i]);
+        uint32_t scene_idx = static_cast<uint32_t>(0x3FFFFFF & ppf_codes_ptr[i] >> 6);
         int scene_angle_bin = static_cast<int>(63 & ppf_codes_ptr[i]);
         int model_angle_bin = static_cast<int>(63 & model_ppf_codes_ptr[model_ppf_idx]);
         int angle_bin = scene_angle_bin - model_angle_bin;
@@ -278,4 +272,85 @@ void PPF::detect(const PointCloud &scene) {
     reduce_by_key<uint64_t>(votes, unique_votes, vote_counts);
 
     printf("max votes: %u\n", thrust::reduce(vote_counts.begin(), vote_counts.end(), 0, thrust::maximum<uint32_t>()));
+    printf("unique votes shape: %lu\n", unique_votes.size());
+
+    // TODO test if gpu reduce is faster, current about 10 ms
+    auto start = std::chrono::high_resolution_clock::now();
+    thrust::host_vector<float> h_model_transforms(model_transforms);
+    thrust::host_vector<float> h_scene_transforms(transforms);
+    thrust::host_vector<uint32_t> h_vote_counts(vote_counts);
+    thrust::host_vector<uint64_t> h_votes(unique_votes);
+    uint32_t curr_scene_idx = static_cast<uint32_t>(h_votes[0] >> 32), curr_vote = 0;
+    arma::fmat33 curr_trans;
+    std::vector<Pose> poses;
+    for (size_t i = 0; i < h_votes.size(); i++)
+    {
+        uint32_t scene_idx = static_cast<uint32_t>(h_votes[i] >> 32);
+        uint32_t vote = h_vote_counts[i];
+        if (scene_idx != curr_scene_idx) {
+            if (curr_vote > min_vote_th && curr_trans.is_finite() && arma::accu(arma::abs(curr_trans)) > 1e-3) {
+                poses.emplace_back(curr_trans, curr_vote);
+            }
+            curr_vote = 0;
+            curr_scene_idx = scene_idx;
+        } else {
+            if (vote > curr_vote) {
+                uint32_t model_idx = static_cast<uint32_t>(0x3FFFFFF & h_votes[i] >> 6);
+                curr_vote = vote;
+                arma::fmat33 model_trans = arma::fmat(const_cast<float *>(&h_model_transforms[i * 9]), 3, 3, false, true);
+                arma::fmat33 scene_trans = arma::fmat(const_cast<float *>(&h_scene_transforms[i * 9]), 3, 3, false, true);
+                curr_trans = scene_trans.t() * model_trans;
+            }
+        }
+    }
+
+    printf("peak finding: %lu\n", poses.size());
+
+    // clustering, has to be on cpu, serial
+    std::sort(poses.begin(), poses.end(), [](const Pose &p1, const Pose &p2) {
+        return p1.vote > p2.vote;
+    });
+
+    // for (size_t i = 0; i < 10; i++)
+    // {
+    //     std::cout << poses[i].r << std::endl;
+    // }
+
+    std::vector<std::pair<int, int> > cluster_votes;
+    std::vector<std::pair<int, std::vector<Pose>>> pose_clusters;
+    for (const auto& pose : poses) {
+        bool found_cluster = false;
+        for (auto& cluster : pose_clusters) {
+            for (auto &cpose : cluster.second) {
+                if (acosf(arma::trace(pose.r.t() * cpose.r) * .5f - .5f) < cluster_angle_th) {
+                    found_cluster = true;
+                    cluster.second.push_back(pose);
+                    cluster.first += pose.vote;
+                    break;
+                }
+            }
+            if (found_cluster) break;
+        }
+
+        // Add a new cluster of poses
+        if (!found_cluster) {
+            std::vector<Pose> cluster = { pose };
+            pose_clusters.emplace_back(pose.vote, cluster);
+        }
+    }
+
+    std::sort(pose_clusters.begin(), pose_clusters.end(), [](const auto &c1, const auto &c2) {
+        return c1.first > c2.first;
+    });
+
+    printf("final pose clusters: %lu\n", pose_clusters.size());
+    for (size_t i = 0; i < 5; i++)
+    {
+        std::cout << pose_clusters[i].second[0].r << std::endl;
+    }
+    
+
+    auto stop = std::chrono::high_resolution_clock::now(); 
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+    std::cout << duration.count() << std::endl; 
 }
