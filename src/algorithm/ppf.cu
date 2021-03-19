@@ -10,7 +10,11 @@
 #include <thrust/transform_reduce.h>
 #include <thrust/iterator/constant_iterator.h>
 #include <thrust/iterator/zip_iterator.h>
+#include <thrust/iterator/discard_iterator.h>
 
+
+#define ARMA_FVEC3(x) arma::fvec((float *)(x), 3, false, false)
+#define ARMA_FMAT33(x) arma::fmat((float *)(x), 3, 3, false, false)
 
 inline __device__ uint32_t rotl32(uint32_t x, int8_t r) {
   return (x << r) | (x >> (32 - r));
@@ -147,12 +151,15 @@ struct TransXKernel
 
 struct Pose
 {
-    arma::fmat33 r;
-    arma::fvec3 t;
-    uint32_t vote;
-    Pose(const arma::fmat33 &r, const arma::fvec3 &t, const uint32_t &vote) :
-        r(r), t(t), vote(vote) {}
+    uint32_t vote = 0;
+    float r[9];
+    float t[3];
+    __host__ __device__ Pose() {}
+    __host__ __device__ Pose(uint32_t vote) : vote(vote) {}
+
 };
+
+
 
 
 template <typename T>
@@ -167,9 +174,11 @@ void reduce_by_key(const thrust::device_vector<T> &keys, thrust::device_vector<T
 }
 
 
-PPF::PPF(const float &dist_delta, const float &angle_delta) :
+PPF::PPF(const float &dist_delta, const float &angle_delta, const float &cluster_dist_th, const float &cluster_angle_th) :
     dist_delta(dist_delta),
-    angle_delta(angle_delta)
+    angle_delta(angle_delta),
+    cluster_dist_th(cluster_dist_th),
+    cluster_angle_th(cluster_angle_th)
 {
 }
 
@@ -198,13 +207,6 @@ void PPF::setup_model(const PointCloud &model) {
     TransXKernel transx_kern(model_pc_normal, model_transforms);
     thrust::for_each_n(thrust::counting_iterator<size_t>(0), model_pc_normal.size(), transx_kern);
 
-    // thrust::host_vector<float> h_transforms(transforms);
-    // for (size_t i = 0; i < 10; i++) {
-    //     auto v = arma::fvec(const_cast<float *>(model.normals[i].data()), 3, false, true);
-    //     auto R = arma::fmat(const_cast<float *>(&h_transforms[i * 9]), 3, 3, false, true);
-    //     std::cout << R.t() * v << std::endl;
-    // }
-
     model_ppf_codes.resize(model.verts.size() * model.verts.size());
     PPFKernel ppf_kern(model_pc, model_pc_normal, model_transforms, model_ppf_codes, npoints, dist_delta, angle_delta);
     thrust::for_each_n(thrust::counting_iterator<size_t>(0), model_ppf_codes.size(), ppf_kern);
@@ -229,6 +231,7 @@ void PPF::setup_model(const PointCloud &model) {
 
 
 void PPF::detect(const PointCloud &scene) {
+    auto start = std::chrono::high_resolution_clock::now();
     // TODO: filter points and pairs
     thrust::device_vector<float3> pc(reinterpret_cast<const float3*>(&(*scene.verts.begin())), reinterpret_cast<const float3*>(&(*scene.verts.end())));
     thrust::device_vector<float3> pc_normal(reinterpret_cast<const float3*>(&(*scene.normals.begin())), reinterpret_cast<const float3*>(&(*scene.normals.end())));
@@ -283,67 +286,146 @@ void PPF::detect(const PointCloud &scene) {
     printf("max votes: %u\n", thrust::reduce(vote_counts.begin(), vote_counts.end(), 0, thrust::maximum<uint32_t>()));
     printf("unique votes shape: %lu\n", unique_votes.size());
 
-    // TODO test if gpu reduce is faster, current about 10 ms
-    auto start = std::chrono::high_resolution_clock::now();
-    thrust::host_vector<float> h_model_transforms(model_transforms);
-    thrust::host_vector<float> h_scene_transforms(transforms);
+    auto stop = std::chrono::high_resolution_clock::now(); 
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+    std::cout << "time1: " << duration.count() << std::endl; 
 
-    // for (int i = 0; i < 10; i++) {
-    //     printf("x y z: %f, %f, %f\n", h_model_transforms[i * 9], h_model_transforms[i * 9 + 1], h_model_transforms[i * 9 + 2]);
+    // // TODO test if gpu reduce is faster, current about 10 ms
+    // start = stop;
+    // thrust::host_vector<float> h_model_transforms(model_transforms);
+    // thrust::host_vector<float> h_scene_transforms(transforms);
+    // thrust::host_vector<uint32_t> h_vote_counts(vote_counts);
+    // thrust::host_vector<uint64_t> h_votes(unique_votes);
+    // thrust::host_vector<float3> h_model_pc(model_pc);
+    // thrust::host_vector<float3> h_scene_pc(pc);
+    // uint32_t curr_scene_idx = static_cast<uint32_t>(h_votes[0] >> 32), curr_vote = 0;
+    // arma::fmat33 curr_r;
+    // arma::fvec3 curr_t;
+    // std::vector<Pose> poses;
+    // for (size_t i = 0; i < h_votes.size(); i++)
+    // {
+    //     uint32_t scene_idx = static_cast<uint32_t>(h_votes[i] >> 32);
+    //     uint32_t vote = h_vote_counts[i];
+    //     if (scene_idx != curr_scene_idx) {
+    //         if (curr_vote > min_vote_th) {
+    //             Pose p(curr_vote);
+    //             std::copy(curr_r.memptr(), curr_r.memptr() + 9, (float *)p.r);
+    //             std::copy(curr_t.memptr(), curr_t.memptr() + 3, (float *)p.t);
+    //             poses.push_back(p);
+    //             // poses.emplace_back(curr_vote, curr_r, curr_t);
+    //         }
+    //         curr_vote = 0;
+    //         curr_scene_idx = scene_idx;
+    //     } else {
+    //         if (vote > curr_vote) {
+    //             uint32_t model_idx = static_cast<uint32_t>(0x3FFFFFF & h_votes[i] >> 6);
+    //             curr_vote = vote;
+    //             arma::fmat model_trans(const_cast<float *>(&h_model_transforms[model_idx * 9]), 3, 3, false, true);  // col major
+    //             arma::fmat scene_trans(const_cast<float *>(&h_scene_transforms[scene_idx * 9]), 3, 3, false, true);
+    //             curr_r = model_trans * scene_trans.t();
+    //             // strange: buggy below
+    //             arma::fvec p2((float *)(&h_scene_pc[scene_idx]), 3, false, true);
+    //             arma::fvec p1((float *)(&h_model_pc[model_idx]), 3, false, true);
+    //             curr_t = p2 - curr_r.t() * p1;  // strange armadillo bug: must use t() twice
+    //         }
+    //     }
     // }
 
-    thrust::host_vector<uint32_t> h_vote_counts(vote_counts);
-    thrust::host_vector<uint64_t> h_votes(unique_votes);
-    thrust::host_vector<float3> h_model_pc(model_pc);
-    thrust::host_vector<float3> h_scene_pc(pc);
-    uint32_t curr_scene_idx = static_cast<uint32_t>(h_votes[0] >> 32), curr_vote = 0;
-    arma::fmat33 curr_r;
-    arma::fvec3 curr_t;
-    std::vector<Pose> poses;
-    for (size_t i = 0; i < h_votes.size(); i++)
-    {
-        uint32_t scene_idx = static_cast<uint32_t>(h_votes[i] >> 32);
-        uint32_t vote = h_vote_counts[i];
-        if (scene_idx != curr_scene_idx) {
-            if (curr_vote > min_vote_th && curr_r.is_finite() && arma::accu(arma::abs(curr_r)) > 1e-3) {
-                poses.emplace_back(curr_r, curr_t, curr_vote);
-            }
-            curr_vote = 0;
-            curr_scene_idx = scene_idx;
-        } else {
-            if (vote > curr_vote) {
-                uint32_t model_idx = static_cast<uint32_t>(0x3FFFFFF & h_votes[i] >> 6);
-                curr_vote = vote;
-                arma::fmat model_trans(const_cast<float *>(&h_model_transforms[model_idx * 9]), 3, 3, true);  // col major
-                arma::fmat scene_trans(const_cast<float *>(&h_scene_transforms[scene_idx * 9]), 3, 3, true);
-                curr_r = scene_trans * model_trans.t();
-                // strange: buggy below
-                arma::fvec p2((float *)(&h_scene_pc[scene_idx]), 3, false, true);
-                arma::fvec p1((float *)(&h_model_pc[model_idx]), 3, false, true);
-                curr_t = p2 - curr_r.t().t() * p1;  // strange armadillo bug: must use t() twice
-            }
-        }
-    }
+    // std::sort(poses.begin(), poses.end(), [](const Pose &p1, const Pose &p2) {
+    //     return p1.vote > p2.vote;
+    // });
 
-    printf("peak finding: %lu\n", poses.size());
-
-    // clustering, has to be on cpu, serial
-    std::sort(poses.begin(), poses.end(), [](const Pose &p1, const Pose &p2) {
-        return p1.vote > p2.vote;
+    // gpu : 3 - 10 times faster
+    thrust::device_vector<uint32_t> scene_idxs(unique_votes.size(), 0);
+    thrust::device_vector<uint32_t> model_idxs(unique_votes.size(), 0);
+    thrust::device_vector<Pose> origin_poses(unique_votes.size());
+    uint32_t *vote_counts_ptr = thrust::raw_pointer_cast(vote_counts.data());
+    float *model_transforms_ptr = thrust::raw_pointer_cast(model_transforms.data());
+    float *scene_transforms_ptr = thrust::raw_pointer_cast(transforms.data());
+    uint32_t *model_idxs_ptr = thrust::raw_pointer_cast(model_idxs.data());
+    uint32_t *scene_idxs_ptr = thrust::raw_pointer_cast(scene_idxs.data());
+    float3 *model_pc_ptr = thrust::raw_pointer_cast(model_pc.data());
+    float3 *scene_pc_ptr = thrust::raw_pointer_cast(pc.data());
+    thrust::transform(thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(0), unique_votes.begin())), 
+        thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(unique_votes.size()), unique_votes.end())), 
+        thrust::make_zip_iterator(thrust::make_tuple(scene_idxs.begin(), model_idxs.begin(), origin_poses.begin())), [=] __device__ (const thrust::tuple<size_t, uint64_t> &t) {
+            size_t i = thrust::get<0>(t);
+            uint64_t v = thrust::get<1>(t);
+            return thrust::make_tuple(static_cast<uint32_t>(v >> 32), static_cast<uint32_t>(0x3FFFFFF & v >> 6), Pose(vote_counts_ptr[i]));
     });
 
-    // for (size_t i = 0; i < 10; i++)
-    // {
-    //     std::cout << poses[i].r << std::endl;
-    // }
+    thrust::host_vector<Pose> h_original_poses(origin_poses);
+    Pose *ptr = thrust::raw_pointer_cast(h_original_poses.data());
 
+    thrust::device_vector<uint32_t> unique_scene_idxs(unique_votes.size(), 0);
+    thrust::device_vector<Pose> unique_poses(unique_votes.size());
+    auto unique_value_begin = thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(0), unique_poses.begin()));
+    auto end = thrust::reduce_by_key(scene_idxs.begin(), scene_idxs.end(), 
+        thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(0), origin_poses.begin())), 
+        unique_scene_idxs.begin(), 
+        unique_value_begin, 
+        thrust::equal_to<uint32_t>(),
+        [=] __device__ (const thrust::tuple<size_t, Pose> &t1, const thrust::tuple<size_t, Pose> &t2) {
+            const auto &p1 = thrust::get<1>(t1);
+            const auto &p2 = thrust::get<1>(t2);
+            if (p1.vote > p2.vote) {
+                return thrust::make_tuple(static_cast<uint64_t>(0), Pose());
+            } else {
+                uint32_t i = thrust::get<0>(t2);
+                Pose p(p2.vote);
+                float *model_trans = &model_transforms_ptr[model_idxs_ptr[i] * 9];
+                float *scene_trans = &scene_transforms_ptr[scene_idxs_ptr[i] * 9];
+                float3 p1 = model_pc_ptr[model_idxs_ptr[i]];
+                float3 p2 = scene_pc_ptr[scene_idxs_ptr[i]];
+#define a scene_trans
+#define b model_trans
+                p.r[0] = a[0] * b[0] + a[3] * b[3] + a[6] * b[6];
+                p.r[1] = a[0] * b[1] + a[3] * b[4] + a[6] * b[7];
+                p.r[2] = a[0] * b[2] + a[3] * b[5] + a[6] * b[8];
+                p.r[3] = a[1] * b[0] + a[4] * b[3] + a[7] * b[6];
+                p.r[4] = a[1] * b[1] + a[4] * b[4] + a[7] * b[7];
+                p.r[5] = a[1] * b[2] + a[4] * b[5] + a[7] * b[8];
+                p.r[6] = a[2] * b[0] + a[5] * b[3] + a[8] * b[6];
+                p.r[7] = a[2] * b[1] + a[5] * b[4] + a[8] * b[7];
+                p.r[8] = a[2] * b[2] + a[5] * b[5] + a[8] * b[8];
+#undef a
+#undef b   
+                float3 rp1 = make_float3(dot(make_float3(p.r[0], p.r[1], p.r[2]), p1), dot(make_float3(p.r[3], p.r[4], p.r[5]), p1), dot(make_float3(p.r[6], p.r[7], p.r[8]), p1));
+                float3 t = p2 - rp1;
+                p.t[0] = t.x;
+                p.t[1] = t.y;
+                p.t[2] = t.z;
+                return thrust::make_tuple(static_cast<uint64_t>(1), p);
+            }
+        });
+    
+    unique_scene_idxs.resize(thrust::distance(unique_scene_idxs.begin(), end.first));
+    unique_poses.resize(thrust::distance(unique_value_begin, end.second));
+
+    thrust::sort(unique_poses.begin(), unique_poses.end(), [] __device__ (const Pose &p1, const Pose &p2) {
+        return p1.vote > p2.vote;
+    });
+    std::vector<Pose> poses;
+    poses.resize(unique_poses.size());
+    thrust::copy(unique_poses.begin(), unique_poses.end(), poses.begin());
+
+    stop = std::chrono::high_resolution_clock::now(); 
+    duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+    std::cout << "time2: " << duration.count() << std::endl; 
+
+    printf("peak finding: %lu\n", poses.size());
+    
+
+    // clustering, has to be on cpu, serial
     std::vector<std::pair<int, int> > cluster_votes;
     std::vector<std::pair<int, std::vector<Pose>>> pose_clusters;
+    int cnt = 0;
     for (const auto& pose : poses) {
         bool found_cluster = false;
         for (auto& cluster : pose_clusters) {
             for (auto &cpose : cluster.second) {
-                if (arma::norm(pose.t - cpose.t) < cluster_dist_th && acosf(arma::trace(pose.r.t() * cpose.r) * .5f - .5f) < cluster_angle_th) {
+                if (arma::norm(arma::fvec3((float *)pose.t) - arma::fvec3((float *)cpose.t)) < cluster_dist_th 
+                        && acosf(arma::trace(arma::fmat33((float *)pose.r) * arma::fmat33((float *)cpose.r).t()) * .5f - .5f) < cluster_angle_th) {
                     found_cluster = true;
                     cluster.second.push_back(pose);
                     cluster.first += pose.vote;
@@ -352,6 +434,7 @@ void PPF::detect(const PointCloud &scene) {
             }
             if (found_cluster) break;
         }
+        cnt += 1;
 
         // Add a new cluster of poses
         if (!found_cluster) {
@@ -368,12 +451,12 @@ void PPF::detect(const PointCloud &scene) {
     printf("final pose clusters: %lu\n", pose_clusters.size());
     for (size_t i = 0; i < 5; i++)
     {
-        std::cout << pose_clusters[i].second[0].r << std::endl;
-        std:: cout << pose_clusters[i].second[0].t << std::endl;
+        std::cout << arma::fmat33((float *)pose_clusters[i].second[0].r).t() << std::endl;
+        std:: cout << arma::fvec3((float *)pose_clusters[i].second[0].t).t() << std::endl;
     }
     
+    stop = std::chrono::high_resolution_clock::now(); 
+    duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+    std::cout << "time3: " << duration.count() << std::endl; 
 
-    auto stop = std::chrono::high_resolution_clock::now(); 
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
-    std::cout << duration.count() << std::endl; 
 }

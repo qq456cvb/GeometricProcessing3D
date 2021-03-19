@@ -9,7 +9,8 @@ int main(int argc, char *argv[]) {
     // auto dist = mesh->geodesic(std::vector{4});
 
     auto pc = reader->read_cloud("../examples/data/model_chair.pcd");
-    // auto scene = reader->read_cloud("../examples/data/scene_chair.pcd");
+    auto scene_ptr = reader->read_cloud("../examples/data/scene_chair.pcd");
+    // auto scene = *scene_ptr;
     auto scene = *pc;
 
     arma::fmat33 r = {
@@ -34,7 +35,7 @@ int main(int argc, char *argv[]) {
     }
     
 
-    auto ppf = std::make_shared<PPF>(0.01f, 12.0f / 180.0f * static_cast<float>(M_PI));
+    auto ppf = std::make_shared<PPF>(0.01f, 12.0f / 180.0f * static_cast<float>(M_PI), 0.05f, 24.0f / 180.0f * static_cast<float>(M_PI));
     ppf->setup_model(*pc);
     ppf->detect(scene);
     return 0;
