@@ -10,8 +10,8 @@ int main(int argc, char *argv[]) {
 
     auto pc = reader->read_cloud("../examples/data/model_chair.pcd");
     auto scene_ptr = reader->read_cloud("../examples/data/scene_chair.pcd");
-    // auto scene = *scene_ptr;
-    auto scene = *pc;
+    auto scene = *scene_ptr;
+    // auto scene = *pc;
 
     arma::fmat33 r = {
         {-0.78502175, -0.61736402, -0.05101488},
@@ -35,7 +35,7 @@ int main(int argc, char *argv[]) {
     }
     
 
-    auto ppf = std::make_shared<PPF>(0.01f, 12.0f / 180.0f * static_cast<float>(M_PI), 0.05f, 24.0f / 180.0f * static_cast<float>(M_PI));
+    auto ppf = std::make_shared<PPF>(0.01f, 12.0f / 180.0f * static_cast<float>(M_PI), 0.1f, 24.0f / 180.0f * static_cast<float>(M_PI));
     ppf->setup_model(*pc);
     ppf->detect(scene);
     return 0;
