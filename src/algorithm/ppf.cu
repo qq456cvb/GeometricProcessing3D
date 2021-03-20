@@ -339,80 +339,6 @@ void PPF::detect(const PointCloud &scene) {
         return p1.vote > p2.vote;
     });
 
-    // gpu : 3 - 10 times faster
-//     thrust::device_vector<uint32_t> scene_idxs(unique_votes.size(), 0);
-//     thrust::device_vector<uint32_t> model_idxs(unique_votes.size(), 0);
-//     thrust::device_vector<Pose> origin_poses(unique_votes.size());
-//     uint32_t *vote_counts_ptr = thrust::raw_pointer_cast(vote_counts.data());
-//     float *model_transforms_ptr = thrust::raw_pointer_cast(model_transforms.data());
-//     float *scene_transforms_ptr = thrust::raw_pointer_cast(transforms.data());
-//     uint32_t *model_idxs_ptr = thrust::raw_pointer_cast(model_idxs.data());
-//     uint32_t *scene_idxs_ptr = thrust::raw_pointer_cast(scene_idxs.data());
-//     float3 *model_pc_ptr = thrust::raw_pointer_cast(model_pc.data());
-//     float3 *scene_pc_ptr = thrust::raw_pointer_cast(pc.data());
-//     thrust::transform(thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(0), unique_votes.begin())), 
-//         thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(unique_votes.size()), unique_votes.end())), 
-//         thrust::make_zip_iterator(thrust::make_tuple(scene_idxs.begin(), model_idxs.begin(), origin_poses.begin())), [=] __device__ (const thrust::tuple<size_t, uint64_t> &t) {
-//             size_t i = thrust::get<0>(t);
-//             uint64_t v = thrust::get<1>(t);
-//             return thrust::make_tuple(static_cast<uint32_t>(v >> 32), static_cast<uint32_t>(0x3FFFFFF & v >> 6), Pose(vote_counts_ptr[i]));
-//     });
-
-//     thrust::host_vector<Pose> h_original_poses(origin_poses);
-//     Pose *ptr = thrust::raw_pointer_cast(h_original_poses.data());
-
-//     thrust::device_vector<uint32_t> unique_scene_idxs(unique_votes.size(), 0);
-//     thrust::device_vector<Pose> unique_poses(unique_votes.size());
-//     auto unique_value_begin = thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(0), unique_poses.begin()));
-//     auto end = thrust::reduce_by_key(scene_idxs.begin(), scene_idxs.end(), 
-//         thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(0), origin_poses.begin())), 
-//         unique_scene_idxs.begin(), 
-//         unique_value_begin, 
-//         thrust::equal_to<uint32_t>(),
-//         [=] __device__ (const thrust::tuple<size_t, Pose> &t1, const thrust::tuple<size_t, Pose> &t2) {
-//             const auto &p1 = thrust::get<1>(t1);
-//             const auto &p2 = thrust::get<1>(t2);
-//             if (p1.vote > p2.vote) {
-//                 return thrust::make_tuple(static_cast<uint64_t>(0), Pose(p1));
-//             } else {
-//                 uint32_t i = thrust::get<0>(t2);
-//                 Pose p(p2.vote);
-//                 float *model_trans = &model_transforms_ptr[model_idxs_ptr[i] * 9];
-//                 float *scene_trans = &scene_transforms_ptr[scene_idxs_ptr[i] * 9];
-//                 float3 p1 = model_pc_ptr[model_idxs_ptr[i]];
-//                 float3 p2 = scene_pc_ptr[scene_idxs_ptr[i]];
-// #define a scene_trans
-// #define b model_trans
-//                 p.r[0] = a[0] * b[0] + a[3] * b[3] + a[6] * b[6];
-//                 p.r[1] = a[0] * b[1] + a[3] * b[4] + a[6] * b[7];
-//                 p.r[2] = a[0] * b[2] + a[3] * b[5] + a[6] * b[8];
-//                 p.r[3] = a[1] * b[0] + a[4] * b[3] + a[7] * b[6];
-//                 p.r[4] = a[1] * b[1] + a[4] * b[4] + a[7] * b[7];
-//                 p.r[5] = a[1] * b[2] + a[4] * b[5] + a[7] * b[8];
-//                 p.r[6] = a[2] * b[0] + a[5] * b[3] + a[8] * b[6];
-//                 p.r[7] = a[2] * b[1] + a[5] * b[4] + a[8] * b[7];
-//                 p.r[8] = a[2] * b[2] + a[5] * b[5] + a[8] * b[8];
-// #undef a
-// #undef b   
-//                 float3 rp1 = make_float3(dot(make_float3(p.r[0], p.r[1], p.r[2]), p1), dot(make_float3(p.r[3], p.r[4], p.r[5]), p1), dot(make_float3(p.r[6], p.r[7], p.r[8]), p1));
-//                 float3 t = p2 - rp1;
-//                 p.t[0] = t.x;
-//                 p.t[1] = t.y;
-//                 p.t[2] = t.z;
-//                 return thrust::make_tuple(static_cast<uint64_t>(1), p);
-//             }
-//         });
-    
-//     unique_scene_idxs.resize(thrust::distance(unique_scene_idxs.begin(), end.first));
-//     unique_poses.resize(thrust::distance(unique_value_begin, end.second));
-
-//     thrust::sort(unique_poses.begin(), unique_poses.end(), [] __device__ (const Pose &p1, const Pose &p2) {
-//         return p1.vote > p2.vote;
-//     });
-//     std::vector<Pose> poses;
-//     poses.resize(unique_poses.size());
-//     thrust::copy(unique_poses.begin(), unique_poses.end(), poses.begin());
-
     stop = std::chrono::high_resolution_clock::now(); 
     duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
     std::cout << "time2: " << duration.count() << std::endl; 
@@ -428,8 +354,12 @@ void PPF::detect(const PointCloud &scene) {
         bool found_cluster = false;
         for (auto& cluster : pose_clusters) {
             for (auto &cpose : cluster.second) {
-                if (arma::norm(arma::fvec3((float *)pose.t) - arma::fvec3((float *)cpose.t)) < cluster_dist_th 
-                        && acosf(arma::trace(arma::fmat33((float *)pose.r) * arma::fmat33((float *)cpose.r).t()) * .5f - .5f) < cluster_angle_th) {
+                float3 t_dist = make_float3(pose.t[0] - cpose.t[0], pose.t[1] - cpose.t[1], pose.t[2] - cpose.t[2]);
+                float trace = pose.r[0] * cpose.r[0] + pose.r[1] * cpose.r[3] + pose.r[2] + cpose.r[6]
+                    + pose.r[3] * cpose.r[1] + pose.r[4] * cpose.r[4] + pose.r[5] + cpose.r[7]
+                    + pose.r[6] * cpose.r[2] + pose.r[7] * cpose.r[5] + pose.r[8] + cpose.r[8];
+                if (dot(t_dist, t_dist) < cluster_dist_th * cluster_dist_th
+                        && acosf(trace * .5f - .5f) < cluster_angle_th) {
                     found_cluster = true;
                     cluster.second.push_back(pose);
                     cluster.first += pose.vote;
