@@ -308,22 +308,44 @@ void PPF::detect(const PointCloud &scene) {
 
     float3 *model_pc_ptr = thrust::raw_pointer_cast(model_pc.data());
     float3 *scene_pc_ptr = thrust::raw_pointer_cast(pc.data());
-    thrust::transform(thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(0), unique_votes.begin())), 
-        thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(unique_votes.size()), unique_votes.end())), 
-        thrust::make_zip_iterator(thrust::make_tuple(scene_idxs.begin(), model_idxs.begin(), origin_poses.begin())), [=] __device__ (const thrust::tuple<size_t, uint64_t> &t) {
-            size_t i = thrust::get<0>(t);
-            uint64_t v = thrust::get<1>(t);
-            Pose p;
-            p.vote = vote_counts_ptr[i];
-            if (i == 0) printf("%ld\n", static_cast<uint32_t>(v >> 32));
-            if (i == 1) printf("%ld\n", static_cast<uint32_t>(v >> 32));
-            return thrust::make_tuple(static_cast<uint32_t>(v >> 32), static_cast<uint32_t>(0x3FFFFFF & v >> 6), p);
+    uint64_t *unique_votes_ptr = thrust::raw_pointer_cast(unique_votes.data());
+    Pose *origin_poses_ptr = thrust::raw_pointer_cast(origin_poses.data());
+    uint32_t *scene_idxs_ptr = thrust::raw_pointer_cast(scene_idxs.data());
+    thrust::for_each_n(thrust::counting_iterator<size_t>(0), unique_votes.size(), [=] __device__ (const size_t &i) {
+        const auto &vote = unique_votes_ptr[i];
+        uint32_t scene_idx = static_cast<uint32_t>(vote >> 32);
+        scene_idxs_ptr[i] = scene_idx;
+        uint32_t model_idx = static_cast<uint32_t>(0x3FFFFFF & vote >> 6);
+
+        Pose p;
+        p.vote = vote_counts_ptr[i];
+        float *model_trans = &model_transforms_ptr[model_idx * 9];
+        float *scene_trans = &scene_transforms_ptr[scene_idx * 9];
+
+        float3 p1 = model_pc_ptr[model_idx];
+        float3 p2 = scene_pc_ptr[scene_idx];
+            
+#define a scene_trans
+#define b model_trans
+        p.r[0] = a[0] * b[0] + a[3] * b[3] + a[6] * b[6];
+        p.r[1] = a[0] * b[1] + a[3] * b[4] + a[6] * b[7];
+        p.r[2] = a[0] * b[2] + a[3] * b[5] + a[6] * b[8];
+        p.r[3] = a[1] * b[0] + a[4] * b[3] + a[7] * b[6];
+        p.r[4] = a[1] * b[1] + a[4] * b[4] + a[7] * b[7];
+        p.r[5] = a[1] * b[2] + a[4] * b[5] + a[7] * b[8];
+        p.r[6] = a[2] * b[0] + a[5] * b[3] + a[8] * b[6];
+        p.r[7] = a[2] * b[1] + a[5] * b[4] + a[8] * b[7];
+        p.r[8] = a[2] * b[2] + a[5] * b[5] + a[8] * b[8];
+#undef a
+#undef b   
+        float3 rp1 = make_float3(dot(make_float3(p.r[0], p.r[1], p.r[2]), p1), dot(make_float3(p.r[3], p.r[4], p.r[5]), p1), dot(make_float3(p.r[6], p.r[7], p.r[8]), p1));
+        float3 t = p2 - rp1;
+        p.t[0] = t.x;
+        p.t[1] = t.y;
+        p.t[2] = t.z;
+        origin_poses_ptr[i] = p;
     });
 
-    uint32_t *model_idxs_ptr = thrust::raw_pointer_cast(model_idxs.data());
-    uint32_t *scene_idxs_ptr = thrust::raw_pointer_cast(scene_idxs.data());
-
-    thrust::device_vector<uint32_t> unique_scene_idxs(unique_votes.size(), 0);
     thrust::device_vector<Pose> unique_poses(unique_votes.size());
     auto unique_value_begin = thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(0), unique_poses.begin()));
     auto end = thrust::reduce_by_key(scene_idxs.begin(), scene_idxs.end(), 
@@ -335,56 +357,14 @@ void PPF::detect(const PointCloud &scene) {
             const auto &pose_1 = thrust::get<1>(t1);
             const auto &pose_2 = thrust::get<1>(t2);
             
-            size_t i;
-            uint32_t vote;
             if (pose_1.vote > pose_2.vote) {
-                i = thrust::get<0>(t1);
-                vote = pose_1.vote;
+                return thrust::make_tuple(thrust::get<0>(t1), Pose(pose_1));
             } else {
-                i = thrust::get<0>(t2);
-                vote = pose_2.vote;
+                return thrust::make_tuple(thrust::get<0>(t2), Pose(pose_2));
             }
-
-            Pose p;
-            p.vote = vote;
-            float *model_trans = &model_transforms_ptr[model_idxs_ptr[i] * 9];
-            float *scene_trans = &scene_transforms_ptr[scene_idxs_ptr[i] * 9];
-
-            float3 p1 = model_pc_ptr[model_idxs_ptr[i]];
-            float3 p2 = scene_pc_ptr[scene_idxs_ptr[i]];
-            
-#define a scene_trans
-#define b model_trans
-            p.r[0] = a[0] * b[0] + a[3] * b[3] + a[6] * b[6];
-            p.r[1] = a[0] * b[1] + a[3] * b[4] + a[6] * b[7];
-            p.r[2] = a[0] * b[2] + a[3] * b[5] + a[6] * b[8];
-            p.r[3] = a[1] * b[0] + a[4] * b[3] + a[7] * b[6];
-            p.r[4] = a[1] * b[1] + a[4] * b[4] + a[7] * b[7];
-            p.r[5] = a[1] * b[2] + a[4] * b[5] + a[7] * b[8];
-            p.r[6] = a[2] * b[0] + a[5] * b[3] + a[8] * b[6];
-            p.r[7] = a[2] * b[1] + a[5] * b[4] + a[8] * b[7];
-            p.r[8] = a[2] * b[2] + a[5] * b[5] + a[8] * b[8];
-#undef a
-#undef b   
-            float3 rp1 = make_float3(dot(make_float3(p.r[0], p.r[1], p.r[2]), p1), dot(make_float3(p.r[3], p.r[4], p.r[5]), p1), dot(make_float3(p.r[6], p.r[7], p.r[8]), p1));
-            float3 t = p2 - rp1;
-            p.t[0] = t.x;
-            p.t[1] = t.y;
-            p.t[2] = t.z;
-
-            if (abs(p.t[0]) < 1e-7 && abs(p.t[1]) < 1e-7 && abs(p.t[2]) < 1e-7) printf("%d %d %d %f %f %f\n", i, model_idxs_ptr[i], scene_idxs_ptr[i], t.x, t.y, t.z);
-            return thrust::make_tuple(i, p);
         });
     
-    // unique_scene_idxs.resize(thrust::distance(unique_scene_idxs.begin(), end.first));
     unique_poses.resize(thrust::distance(unique_value_begin, end.second));
-
-    thrust::for_each_n(thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(0), unique_poses.begin())), unique_poses.size(), 
-        [] __device__ (const thrust::tuple<size_t, Pose> &t) {
-            if (thrust::get<0>(t) == 0) {
-                printf("%f %f %f\n", thrust::get<1>(t).t[0], thrust::get<1>(t).t[1], thrust::get<1>(t).t[2]);
-            }
-        });
 
     thrust::sort(unique_poses.begin(), unique_poses.end(), [] __device__ (const Pose &p1, const Pose &p2) {
         return p1.vote > p2.vote;
@@ -392,15 +372,7 @@ void PPF::detect(const PointCloud &scene) {
     std::vector<Pose> poses;
     poses.resize(unique_poses.size());
     thrust::copy(unique_poses.begin(), unique_poses.end(), poses.begin());
-
-    for (size_t i = 0; i < poses.size(); i++)
-    {
-        if (abs(poses[i].t[0]) < 1e-7 && abs(poses[i].t[1]) < 1e-7 && abs(poses[i].t[2]) < 1e-7) {
-            printf("%lu %d\n", i, poses[i].vote);
-        }
-    }
     
-    return;
 #else
     // TODO test if gpu reduce is faster, current about 10 ms
     start = stop;

@@ -10,8 +10,8 @@ int main(int argc, char *argv[]) {
 
     auto pc = reader->read_cloud("../examples/data/model_chair.pcd");
     auto scene_ptr = reader->read_cloud("../examples/data/scene_chair.pcd");
-    // auto scene = *scene_ptr;
-    auto scene = *pc;
+    auto scene = *scene_ptr;
+    // auto scene = *pc;
 
     arma::fmat33 r = {
         {-0.78502175, -0.61736402, -0.05101488},
