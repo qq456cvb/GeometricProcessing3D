@@ -11,6 +11,8 @@
 #include <thrust/iterator/constant_iterator.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/iterator/discard_iterator.h>
+#include <thrust/count.h>
+#include <thrust/sequence.h>
 
 #define GPU_REDUCE
 
@@ -306,38 +308,34 @@ void PPF::detect(const PointCloud &scene) {
 
     float3 *model_pc_ptr = thrust::raw_pointer_cast(model_pc.data());
     float3 *scene_pc_ptr = thrust::raw_pointer_cast(pc.data());
-    thrust::counting_iterator<size_t> begin = thrust::counting_iterator<size_t>(0);
-    thrust::transform(thrust::make_zip_iterator(thrust::make_tuple(begin, unique_votes.begin())), 
-        thrust::make_zip_iterator(thrust::make_tuple(begin + unique_votes.size(), unique_votes.end())), 
+    thrust::transform(thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(0), unique_votes.begin())), 
+        thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(unique_votes.size()), unique_votes.end())), 
         thrust::make_zip_iterator(thrust::make_tuple(scene_idxs.begin(), model_idxs.begin(), origin_poses.begin())), [=] __device__ (const thrust::tuple<size_t, uint64_t> &t) {
             size_t i = thrust::get<0>(t);
             uint64_t v = thrust::get<1>(t);
             Pose p;
             p.vote = vote_counts_ptr[i];
+            if (i == 0) printf("%ld\n", static_cast<uint32_t>(v >> 32));
+            if (i == 1) printf("%ld\n", static_cast<uint32_t>(v >> 32));
             return thrust::make_tuple(static_cast<uint32_t>(v >> 32), static_cast<uint32_t>(0x3FFFFFF & v >> 6), p);
     });
 
     uint32_t *model_idxs_ptr = thrust::raw_pointer_cast(model_idxs.data());
     uint32_t *scene_idxs_ptr = thrust::raw_pointer_cast(scene_idxs.data());
 
-    printf("sanity check: %u\n", thrust::reduce(origin_poses.begin(), origin_poses.end(), Pose(), [] __device__ (const Pose &p1, const Pose &p2) {
-        Pose p;
-        p.vote = p1.vote + p2.vote;
-        return p;
-    }).vote);
     thrust::device_vector<uint32_t> unique_scene_idxs(unique_votes.size(), 0);
     thrust::device_vector<Pose> unique_poses(unique_votes.size());
     auto unique_value_begin = thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(0), unique_poses.begin()));
     auto end = thrust::reduce_by_key(scene_idxs.begin(), scene_idxs.end(), 
         thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(0), origin_poses.begin())), 
-        unique_scene_idxs.begin(), 
+        thrust::make_discard_iterator(), 
         unique_value_begin, 
         thrust::equal_to<uint32_t>(),
         [=] __device__ (const thrust::tuple<size_t, Pose> &t1, const thrust::tuple<size_t, Pose> &t2) {
             const auto &pose_1 = thrust::get<1>(t1);
             const auto &pose_2 = thrust::get<1>(t2);
             
-            uint32_t i;
+            size_t i;
             uint32_t vote;
             if (pose_1.vote > pose_2.vote) {
                 i = thrust::get<0>(t1);
@@ -354,6 +352,7 @@ void PPF::detect(const PointCloud &scene) {
 
             float3 p1 = model_pc_ptr[model_idxs_ptr[i]];
             float3 p2 = scene_pc_ptr[scene_idxs_ptr[i]];
+            
 #define a scene_trans
 #define b model_trans
             p.r[0] = a[0] * b[0] + a[3] * b[3] + a[6] * b[6];
@@ -372,11 +371,20 @@ void PPF::detect(const PointCloud &scene) {
             p.t[0] = t.x;
             p.t[1] = t.y;
             p.t[2] = t.z;
-            return thrust::make_tuple(static_cast<size_t>(0), p);
+
+            if (abs(p.t[0]) < 1e-7 && abs(p.t[1]) < 1e-7 && abs(p.t[2]) < 1e-7) printf("%d %d %d %f %f %f\n", i, model_idxs_ptr[i], scene_idxs_ptr[i], t.x, t.y, t.z);
+            return thrust::make_tuple(i, p);
         });
     
-    unique_scene_idxs.resize(thrust::distance(unique_scene_idxs.begin(), end.first));
+    // unique_scene_idxs.resize(thrust::distance(unique_scene_idxs.begin(), end.first));
     unique_poses.resize(thrust::distance(unique_value_begin, end.second));
+
+    thrust::for_each_n(thrust::make_zip_iterator(thrust::make_tuple(thrust::counting_iterator<size_t>(0), unique_poses.begin())), unique_poses.size(), 
+        [] __device__ (const thrust::tuple<size_t, Pose> &t) {
+            if (thrust::get<0>(t) == 0) {
+                printf("%f %f %f\n", thrust::get<1>(t).t[0], thrust::get<1>(t).t[1], thrust::get<1>(t).t[2]);
+            }
+        });
 
     thrust::sort(unique_poses.begin(), unique_poses.end(), [] __device__ (const Pose &p1, const Pose &p2) {
         return p1.vote > p2.vote;
@@ -385,6 +393,14 @@ void PPF::detect(const PointCloud &scene) {
     poses.resize(unique_poses.size());
     thrust::copy(unique_poses.begin(), unique_poses.end(), poses.begin());
 
+    for (size_t i = 0; i < poses.size(); i++)
+    {
+        if (abs(poses[i].t[0]) < 1e-7 && abs(poses[i].t[1]) < 1e-7 && abs(poses[i].t[2]) < 1e-7) {
+            printf("%lu %d\n", i, poses[i].vote);
+        }
+    }
+    
+    return;
 #else
     // TODO test if gpu reduce is faster, current about 10 ms
     start = stop;
@@ -396,7 +412,7 @@ void PPF::detect(const PointCloud &scene) {
     thrust::host_vector<float3> h_model_pc(model_pc);
     thrust::host_vector<float3> h_scene_pc(pc);
     uint32_t curr_scene_idx = static_cast<uint32_t>(h_votes[0] >> 32), curr_vote = 0;
-    arma::fmat33 curr_r;
+    arma::fmat33 curr_r_t;
     arma::fvec3 curr_t;
     std::vector<Pose> poses;
     for (size_t i = 0; i < h_votes.size(); i++)
@@ -405,21 +421,21 @@ void PPF::detect(const PointCloud &scene) {
         uint32_t vote = h_vote_counts[i];
         if (scene_idx != curr_scene_idx) {
             if (curr_vote > min_vote_th) {
-                poses.emplace_back(curr_vote, curr_r.memptr(), curr_t.memptr());
+                poses.emplace_back(curr_vote, curr_r_t.memptr(), curr_t.memptr());
             }
             curr_vote = 0;
             curr_scene_idx = scene_idx;
         } else {
             if (vote > curr_vote) {
-                uint32_t model_idx = static_cast<uint32_t>(0x3FFFFFF & h_votes[i] >> 6);
+                uint64_t model_idx = static_cast<uint64_t>(0x3FFFFFF & h_votes[i] >> 6);
                 curr_vote = vote;
-                arma::fmat model_trans_t(const_cast<float *>(&h_model_transforms[model_idx * 9]), 3, 3, false, true);  // col major
+                arma::fmat model_trans_t(const_cast<float *>(&h_model_transforms[model_idx * 9]), 3, 3, false, true);  // col major // potential overflow
                 arma::fmat scene_trans_t(const_cast<float *>(&h_scene_transforms[scene_idx * 9]), 3, 3, false, true);
-                curr_r = scene_trans_t * model_trans_t.t();
+                curr_r_t = model_trans_t * scene_trans_t.t();
                 // strange: buggy below
                 arma::fvec p2((float *)(&h_scene_pc[scene_idx]), 3, false, true);
                 arma::fvec p1((float *)(&h_model_pc[model_idx]), 3, false, true);
-                curr_t = p2 - curr_r.t().t() * p1;  // strange armadillo bug: must use t() twice
+                curr_t = p2 - curr_r_t.t() * p1;  // strange armadillo bug: must use t() twice
             }
         }
     }
@@ -472,9 +488,9 @@ void PPF::detect(const PointCloud &scene) {
 
     // TODO: merge cluster poses
     printf("final pose clusters: %lu\n", pose_clusters.size());
-    for (size_t i = 0; i < 10; i++)
+    for (size_t i = 0; i < 20; i++)
     {
-        std::cout << i << ", " << pose_clusters[i].first << std::endl << arma::fmat33((float *)pose_clusters[i].second[0].r) << arma::fvec3((float *)pose_clusters[i].second[0].t).t() << std::endl;
+        std::cout << i << ", " << pose_clusters[i].first << std::endl << arma::fmat33((float *)pose_clusters[i].second[0].r).t() << arma::fvec3((float *)pose_clusters[i].second[0].t).t() << std::endl;
     }
     
     stop = std::chrono::high_resolution_clock::now(); 
