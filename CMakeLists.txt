@@ -15,6 +15,16 @@ file(GLOB EXAMPLES
     ${PROJECT_SOURCE_DIR}/examples/*.cpp
 )
 
+file(GLOB_RECURSE PYBIND_SRC_FILES
+    ${PROJECT_SOURCE_DIR}/pybind/*.cpp
+)
+
+find_package( PythonInterp 3.6 REQUIRED )
+find_package( PythonLibs 3.6 REQUIRED )
+find_package( pybind11 REQUIRED )
+pybind11_add_module(pygeom ${PYBIND_SRC_FILES})
+target_include_directories(pygeom PUBLIC ${PYTHON_INCLUDE_DIRS})
+
 FIND_PACKAGE(CUDA REQUIRED)
 message(STATUS "CUDA Version: " ${CUDA_VERSION_STRINGS})
 message(STATUS "CUDA Libararies: " ${CUDA_LIBRARIES})
@@ -27,3 +37,4 @@ target_link_libraries(gp3d ${ARMADILLO_LIBRARIES})
 add_executable(main ${EXAMPLES})
 
 target_link_libraries(main gp3d)
+target_link_libraries(pygeom PRIVATE gp3d)
