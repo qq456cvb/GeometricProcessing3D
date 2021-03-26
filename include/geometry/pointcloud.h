@@ -3,8 +3,9 @@
 
 #include <memory>
 #include <vector>
+#include <armadillo>
 
-using xyz = std::array<float, 3>;
+using xyz = arma::fvec;
 
 class PointCloud
 {
@@ -17,6 +18,7 @@ public:
     ~PointCloud();
     PointCloud(std::vector<xyz> &&v);
     PointCloud(std::vector<xyz> &&v, std::vector<xyz> &&n);
+    PointCloud(const std::vector<xyz> &v, const std::vector<xyz> &n);
 };
 
 #endif

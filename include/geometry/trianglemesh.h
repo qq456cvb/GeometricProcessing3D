@@ -15,7 +15,7 @@ typedef struct {
 typedef std::unordered_map<std::pair<int, int>, std::vector<int>, std::function<size_t(std::pair<int, int>)>, 
         std::function<bool(std::pair<int, int>, std::pair<int, int>)>> pair_map;
 
-using xyz = std::array<float, 3>;
+using xyz = arma::fvec;
 class TriangleMesh
 {
 private:

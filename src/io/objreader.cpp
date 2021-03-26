@@ -72,7 +72,7 @@ static auto parse_single_value(const char *&str) {
 }
 
 template <typename T>
-static inline std::array<T, 3> parse_triplet(const char *&str) {
+static inline typename arma::Col<T> parse_triplet(const char *&str) {
     auto v1 = parse_single_value<T>(str);
     if (*str != '/') return {v1, 0, 0};
     str++;
@@ -89,7 +89,7 @@ static inline std::array<T, 3> parse_triplet(const char *&str) {
 }
 
 template <typename T>
-static inline std::array<T, 3> parse_triplet_direct(const char *&str) {
+static inline typename arma::Col<T> parse_triplet_direct(const char *&str) {
     auto v1 = parse_single_value<T>(str);
     auto v2 = parse_single_value<T>(str);
     auto v3 = parse_single_value<T>(str);
@@ -144,7 +144,7 @@ std::shared_ptr<TriangleMesh> ObjReader::read_mesh(const char *fn)
         if (line[0] == 'v' && line[1] == ' ') {
             line++;
             auto xyz = parse_triplet_direct<float>(line);
-            verts.push_back(xyz);
+            verts.push_back(std::move(xyz));
             // printf("x: %f, y: %f, z: %f\n", xyz[0], xyz[1], xyz[2]);
         } else if (line[0] == 'f') {
             line++;
@@ -155,7 +155,7 @@ std::shared_ptr<TriangleMesh> ObjReader::read_mesh(const char *fn)
             f.vs = {f1[0] - 1, f2[0] - 1, f3[0] - 1};
             f.ns = {f1[1] - 1, f2[1] - 1, f3[1] - 1};
             f.ts = {f1[2] - 1, f2[2] - 1, f3[2] - 1};
-            face_idxs.push_back(f);
+            face_idxs.push_back(std::move(f));
         }
     }
 
@@ -197,9 +197,9 @@ std::shared_ptr<PointCloud> ObjReader::read_cloud(const char *fn)
         auto xyz = parse_triplet_direct<float>(line);
         if (has_normal) {
             auto xyz_n = parse_triplet_direct<float>(line);
-            normals.push_back(xyz_n);
+            normals.push_back(std::move(xyz_n));
         }
-        verts.push_back(xyz);
+        verts.push_back(std::move(xyz));
     }
 
     return std::make_shared<PointCloud>(std::move(verts), std::move(normals));

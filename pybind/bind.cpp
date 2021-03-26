@@ -29,11 +29,13 @@ PYBIND11_MAKE_OPAQUE(std::vector<arma::vec4>);
 
 #include "algorithm/algorithm.hpp"
 #include "arma.hpp"
-
+#include "geometry/pointcloud.hpp"
 
 PYBIND11_MODULE(pygeom, m) {
     m.doc() = "Python binding of Geometric3D";
+    pybind_pointcloud(m);
     pybind_algorithm(m);
     pybind_arma(m);
+    
 }
 #endif

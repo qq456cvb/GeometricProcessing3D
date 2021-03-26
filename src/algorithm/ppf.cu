@@ -182,11 +182,14 @@ void reduce_by_key(const thrust::device_vector<T> &keys, thrust::device_vector<T
 }
 
 
-PPF::PPF(const float &dist_delta, const float &angle_delta, const float &cluster_dist_th, const float &cluster_angle_th) :
+PPF::PPF(float dist_delta, float angle_delta, 
+        float cluster_dist_th, float cluster_angle_th,
+        int min_vote_th) :
     dist_delta(dist_delta),
     angle_delta(angle_delta),
     cluster_dist_th(cluster_dist_th),
-    cluster_angle_th(cluster_angle_th)
+    cluster_angle_th(cluster_angle_th),
+    min_vote_th(min_vote_th)
 {
 }
 
@@ -195,18 +198,30 @@ PPF::~PPF()
 }
 
 
-void PPF::setup_model(const PointCloud &model) {
-    model_pc = thrust::device_vector<float3>(reinterpret_cast<const float3*>(&(*model.verts.begin())), reinterpret_cast<const float3*>(&(*model.verts.end())));
-    model_pc_normal = thrust::device_vector<float3>(reinterpret_cast<const float3*>(&(*model.normals.begin())), reinterpret_cast<const float3*>(&(*model.normals.end())));
+std::vector<float3> convert2continuous(const std::vector<xyz> &x) {
+    std::vector<float3> res(x.size());
+    for (size_t i = 0; i < x.size(); i++)
+    {
+        memcpy(&res[i], x[i].memptr(), sizeof(float) * 3);
+    }
+    return res;
+}
+
+
+void PPF::setup_model(std::shared_ptr<PointCloud> model) {
+    std::vector<float3> cv = convert2continuous(model->verts);
+    std::vector<float3> cn = convert2continuous(model->normals);
+    model_pc = thrust::device_vector<float3>(cv.begin(), cv.end());
+    model_pc_normal = thrust::device_vector<float3>(cn.begin(), cn.end());
     // float3 *pc_ptr = thrust::raw_pointer_cast(model_pc.data());
     // float3 *pc_normal_ptr = thrust::raw_pointer_cast(model_pc_normal.data());
     std::array<float, 3> center = {0, 0, 0};
-    for (const auto &v : model.verts) {
+    for (const auto &v : model->verts) {
         center[0] += v[0];
         center[1] += v[1];
         center[2] += v[2];
     } 
-    model_center = {center[0] / model.verts.size(), center[1] / model.verts.size(), center[2] / model.verts.size()};
+    model_center = {center[0] / model->verts.size(), center[1] / model->verts.size(), center[2] / model->verts.size()};
     
     int npoints = static_cast<int>(model_pc.size());
 
@@ -215,7 +230,7 @@ void PPF::setup_model(const PointCloud &model) {
     TransXKernel transx_kern(model_pc_normal, model_transforms);
     thrust::for_each_n(thrust::counting_iterator<size_t>(0), model_pc_normal.size(), transx_kern);
 
-    model_ppf_codes.resize(model.verts.size() * model.verts.size());
+    model_ppf_codes.resize(model->verts.size() * model->verts.size());
     PPFKernel ppf_kern(model_pc, model_pc_normal, model_transforms, model_ppf_codes, npoints, dist_delta, angle_delta);
     thrust::for_each_n(thrust::counting_iterator<size_t>(0), model_ppf_codes.size(), ppf_kern);
 
@@ -238,11 +253,15 @@ void PPF::setup_model(const PointCloud &model) {
 }
 
 
-void PPF::detect(const PointCloud &scene) {
+void PPF::detect(std::shared_ptr<PointCloud> scene) {
     auto start = std::chrono::high_resolution_clock::now();
     // TODO: filter points and pairs
-    thrust::device_vector<float3> pc(reinterpret_cast<const float3*>(&(*scene.verts.begin())), reinterpret_cast<const float3*>(&(*scene.verts.end())));
-    thrust::device_vector<float3> pc_normal(reinterpret_cast<const float3*>(&(*scene.normals.begin())), reinterpret_cast<const float3*>(&(*scene.normals.end())));
+    // thrust::device_vector<float3> pc(reinterpret_cast<const float3*>(&(*scene->verts.begin())), reinterpret_cast<const float3*>(&(*scene->verts.end())));
+    // thrust::device_vector<float3> pc_normal(reinterpret_cast<const float3*>(&(*scene->normals.begin())), reinterpret_cast<const float3*>(&(*scene->normals.end())));
+    std::vector<float3> cv = convert2continuous(scene->verts);
+    std::vector<float3> cn = convert2continuous(scene->normals);
+    thrust::device_vector<float3> pc = thrust::device_vector<float3>(cv.begin(), cv.end());
+    thrust::device_vector<float3> pc_normal = thrust::device_vector<float3>(cn.begin(), cn.end());
 
     int npoints = static_cast<int>(pc.size());
     int n_angle_bins = static_cast<int>(2.0000001 * M_PI / angle_delta);

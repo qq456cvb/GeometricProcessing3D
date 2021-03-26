@@ -15,15 +15,17 @@ private:
     thrust::device_vector<float> model_transforms;
     thrust::device_vector<uint32_t> key2ppf, model_hash_keys, ppf_count, first_ppf_idx;
     float dist_delta, angle_delta;
-    float cluster_dist_th = 0.05f, cluster_angle_th = 24.f / 180.f * M_PI;
-    int min_vote_th = 5;
+    float cluster_dist_th, cluster_angle_th;
+    int min_vote_th;
     arma::fvec3 model_center;
 public:
-    PPF(const float &dist_delta, const float &angle_delta, const float &cluster_dist_th, const float &cluster_angle_th);
+    PPF(float dist_delta, float angle_delta, 
+        float cluster_dist_th = 0.05f, float cluster_angle_th = 24.f / 180.f * M_PI, 
+        int min_vote_th = 5);
     ~PPF();
     
-    void setup_model(const PointCloud &model);
-    void detect(const PointCloud &scene);
+    void setup_model(std::shared_ptr<PointCloud> model);
+    void detect(std::shared_ptr<PointCloud> scene);
 };
 
 
