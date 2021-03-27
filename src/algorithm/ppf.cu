@@ -1,7 +1,7 @@
 #include "algorithm/ppf.h"
 #include <cuda_runtime.h>
 #include "utils/helper_math.h"
-#include <armadillo>
+#include <Eigen/Dense>
 #include <chrono>
 
 #include <thrust/sort.h>
@@ -202,7 +202,7 @@ std::vector<float3> convert2continuous(const std::vector<xyz> &x) {
     std::vector<float3> res(x.size());
     for (size_t i = 0; i < x.size(); i++)
     {
-        memcpy(&res[i], x[i].memptr(), sizeof(float) * 3);
+        memcpy(&res[i], x[i].data(), sizeof(float) * 3);
     }
     return res;
 }
@@ -221,7 +221,6 @@ void PPF::setup_model(std::shared_ptr<PointCloud> model) {
         center[1] += v[1];
         center[2] += v[2];
     } 
-    model_center = {center[0] / model->verts.size(), center[1] / model->verts.size(), center[2] / model->verts.size()};
     
     int npoints = static_cast<int>(model_pc.size());
 
@@ -479,9 +478,11 @@ void PPF::detect(std::shared_ptr<PointCloud> scene) {
 
     // TODO: merge cluster poses
     printf("final pose clusters: %lu\n", pose_clusters.size());
-    for (size_t i = 0; i < 20; i++)
+    for (size_t i = 0; i < std::min(pose_clusters.size(), size_t(20)); i++)
     {
-        std::cout << i << ", " << pose_clusters[i].first << std::endl << arma::fmat33((float *)pose_clusters[i].second[0].r).t() << arma::fvec3((float *)pose_clusters[i].second[0].t).t() << std::endl;
+        std::cout << i << ", " << pose_clusters[i].first << std::endl 
+            << Eigen::Map<Eigen::Matrix3f>((float *)pose_clusters[i].second[0].r).transpose() << std::endl
+            << Eigen::Map<Eigen::Vector3f>((float *)pose_clusters[i].second[0].t).transpose() << std::endl;
     }
     
     stop = std::chrono::high_resolution_clock::now(); 

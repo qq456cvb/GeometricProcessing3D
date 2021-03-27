@@ -3,9 +3,9 @@
 
 #include <memory>
 #include <vector>
-#include <armadillo>
+#include <Eigen/Dense>
 
-using xyz = arma::fvec;
+using xyz = Eigen::Vector3f;
 
 class PointCloud
 {

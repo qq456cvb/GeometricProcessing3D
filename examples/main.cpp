@@ -1,7 +1,7 @@
 #include "io/objreader.h"
 #include "algorithm/ppf.h"
 #include <memory>
-#include <armadillo>
+#include <Eigen/Dense>
 
 int main(int argc, char *argv[]) {
     auto reader = std::make_shared<ObjReader>();
@@ -11,13 +11,11 @@ int main(int argc, char *argv[]) {
     auto pc = reader->read_cloud("../examples/data/model_chair.pcd");
     auto scene = reader->read_cloud("../examples/data/scene_chair.pcd");
     // auto scene = pc;
-
-    arma::fmat33 r = {
-        {-0.78502175, -0.61736402, -0.05101488},
-        {-0.13302366,  0.2484333 , -0.95947152},
-        { 0.60501699, -0.74641982, -0.27714957}
-    };
-    arma::fvec3 t = { 0.70593162, -0.3494284,  -0.24574194 };
+    Eigen::Matrix3f r;
+    r << -0.78502175, -0.61736402, -0.05101488,
+        -0.13302366,  0.2484333 , -0.95947152,
+        0.60501699, -0.74641982, -0.27714957;
+    Eigen::Vector3f t = { 0.70593162, -0.3494284,  -0.24574194 };
     for (size_t i = 0; i < scene->verts.size(); i++)
     {
         auto p = scene->verts[i];

@@ -72,7 +72,7 @@ static auto parse_single_value(const char *&str) {
 }
 
 template <typename T>
-static inline typename arma::Col<T> parse_triplet(const char *&str) {
+static inline typename Eigen::Matrix<T, 3, 1> parse_triplet(const char *&str) {
     auto v1 = parse_single_value<T>(str);
     if (*str != '/') return {v1, 0, 0};
     str++;
@@ -89,7 +89,7 @@ static inline typename arma::Col<T> parse_triplet(const char *&str) {
 }
 
 template <typename T>
-static inline typename arma::Col<T> parse_triplet_direct(const char *&str) {
+static inline typename Eigen::Matrix<T, 3, 1> parse_triplet_direct(const char *&str) {
     auto v1 = parse_single_value<T>(str);
     auto v2 = parse_single_value<T>(str);
     auto v3 = parse_single_value<T>(str);

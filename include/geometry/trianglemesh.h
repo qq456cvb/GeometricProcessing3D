@@ -4,7 +4,7 @@
 #include <vector>
 #include <tuple>
 #include <memory>
-#include <armadillo>
+#include <Eigen/Dense>
 
 typedef struct {
     std::array<int, 3> vs;
@@ -15,7 +15,7 @@ typedef struct {
 typedef std::unordered_map<std::pair<int, int>, std::vector<int>, std::function<size_t(std::pair<int, int>)>, 
         std::function<bool(std::pair<int, int>, std::pair<int, int>)>> pair_map;
 
-using xyz = arma::fvec;
+using xyz = Eigen::Vector3f;
 class TriangleMesh
 {
 private:

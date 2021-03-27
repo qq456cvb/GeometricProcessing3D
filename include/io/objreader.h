@@ -1,7 +1,7 @@
 #ifndef OBJREADER_H
 #define OBJREADER_H
 
-#include <armadillo>
+#include <Eigen/Dense>
 #include "geometry/trianglemesh.h"
 #include "geometry/pointcloud.h"
 

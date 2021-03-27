@@ -1,12 +1,10 @@
 #include "geometry/trianglemesh.h"
 #include <math.h>
+#include <Eigen/Sparse>
 
 
-// #define ARMA_FVEC(x) arma::fvec(const_cast<float *>(x.data()), x.size(), false, true)
-// #define ARMA_FVEC3(x) arma::fvec(const_cast<float *>(x.data()), 3, false, true)
-
-static inline float calc_cot(const arma::fvec &a, const arma::fvec &b) {
-    return arma::dot(a, b) / arma::norm(arma::cross(a, b));
+static inline float calc_cot(const Eigen::Vector3f &a, const Eigen::Vector3f  &b) {
+    return a.dot(b) / a.cross(b).norm();
 }
 
 auto build_v2v_nbrs(const std::vector<xyz> &v, const std::vector<face_idx_t> &f) {
@@ -33,7 +31,7 @@ auto build_areas(const std::vector<xyz> &v, const std::vector<face_idx_t> &f) {
         const auto &v2 = v[facet.vs[1]];
         const auto &v3 = v[facet.vs[2]];
 
-        float area = arma::norm(arma::cross(v2 - v1, v3 - v1));
+        float area = (v2 - v1).cross(v3 - v1).norm();
         areas[i] = area;
     }
     return areas;
@@ -48,7 +46,7 @@ auto build_face_ns(const std::vector<xyz> &v, const std::vector<face_idx_t> &f) 
         const auto &v2 = v[facet.vs[1]];
         const auto &v3 = v[facet.vs[2]];
 
-        arma::fvec3 n = arma::normalise(arma::cross(v2 - v1, v3 - v1));
+        Eigen::Vector3f n = (v2 - v1).cross(v3 - v1).normalized();
         face_ns[i] = { n(0), n(1), n(2) };
     }
     return face_ns;
@@ -114,13 +112,13 @@ std::vector<float> TriangleMesh::geodesic(const std::vector<int> &source) {
     if (e2f_nbrs.empty()) e2f_nbrs = build_e2f_nbrs(this->verts, this->face_idxs);
     if (face_ns.empty()) face_ns = build_face_ns(this->verts, this->face_idxs);
 
-    arma::fvec u0(verts.size(), arma::fill::zeros);
+    Eigen::VectorXf u0 = Eigen::VectorXf::Zero(verts.size());
     u0.resize(verts.size());
     for (const auto &s : source) {
         u0(s) = 1.f;
     }
 
-    arma::sp_fmat L(verts.size(), verts.size());
+    Eigen::SparseMatrix<float> L(verts.size(), verts.size());
     for (const auto &nbrs : e2f_nbrs) {
         const auto &edge = nbrs.first;
         int i = edge.first, j = edge.second;
@@ -128,25 +126,28 @@ std::vector<float> TriangleMesh::geodesic(const std::vector<int> &source) {
         for (size_t c = 0; c < faces.size(); c++) {
             for (auto v : face_idxs[faces[c]].vs) {
                 if (v != i && v != j) {
-                    arma::fvec vi = verts[i] - verts[v];
-                    arma::fvec vj = verts[j] - verts[v];
+                    auto vi = verts[i] - verts[v];
+                    auto vj = verts[j] - verts[v];
                     float cot = calc_cot(vi, vj);
-                    L(i, j) += 0.5f * cot;
-                    L(j, i) += 0.5f * cot;
+                    L.coeffRef(i, j) += 0.5f * cot;
+                    L.coeffRef(j, i) += 0.5f * cot;
                     break;
                 }
             }
         }
     }
-    L -= arma::diagmat(arma::sum(L, 1));
+    Eigen::VectorXf rowsum = L * Eigen::VectorXf::Ones(L.cols());
+    for (size_t i = 0; i < L.cols(); i++) {
+        L.coeffRef(i, i) -= rowsum(i);
+    }
 
-    arma::sp_fmat A(verts.size(), verts.size());
+    Eigen::SparseMatrix<float> A(verts.size(), verts.size());
     for (size_t i = 0; i < verts.size(); i++) {
         float a = 0.f;
         for (int f_idx : v2f_nbrs[i]) {
             a += areas[f_idx];
         }
-        A(i, i) = a / 3.f;
+        A.insert(i, i) = a / 3.f;
     }
 
     // determine spacing h^2
@@ -154,30 +155,31 @@ std::vector<float> TriangleMesh::geodesic(const std::vector<int> &source) {
     for (const auto &nbrs : e2f_nbrs) {
         const auto &edge = nbrs.first;
         int i = edge.first, j = edge.second;
-        arma::fvec ij = verts[j] - verts[i];
-        t += arma::norm(ij);
+        auto ij = verts[j] - verts[i];
+        t += ij.norm();
     }
     t /= e2f_nbrs.size();
     t *= t;
 
-    arma::fvec u = arma::spsolve(A - t * L, u0, "lapack");
-    arma::fmat grad_u(face_idxs.size(), 3, arma::fill::zeros);
+    Eigen::SparseQR<Eigen::SparseMatrix<float>, Eigen::COLAMDOrdering<int>> solver;
+    solver.compute(A - t * L);
+    Eigen::VectorXf u = solver.solve(u0);
+    Eigen::MatrixXf grad_u = Eigen::MatrixXf::Zero(face_idxs.size(), 3);
     for (size_t i = 0; i < face_idxs.size(); i++) {
         const auto &vs = face_idxs[i].vs;
-        arma::fvec3 grad;
-        grad.fill(0);
+        Eigen::Vector3f grad(0.f, 0.f, 0.f);
         for (size_t j = 0; j < 3; j++) {
             int v1_idx = vs[j];
             int v2_idx = vs[(j + 1) % 3];
             int v3_idx = vs[(j + 2) % 3];
-            arma::fvec edge = verts[v2_idx] - verts[v1_idx];
-            grad += u(v3_idx) * arma::cross(face_ns[i], edge);
+            Eigen::Vector3f edge = verts[v2_idx] - verts[v1_idx];
+            grad += u(v3_idx) * face_ns[i].cross(edge);
         }
-        grad_u.row(i) = -arma::normalise(grad / (2.f * areas[i])).t();
+        grad_u.row(i) = -(grad / (2.f * areas[i])).normalized().transpose();
     }
 
     // maybe speedup by precompute angles
-    arma::fvec div(verts.size(), arma::fill::zeros);
+    Eigen::VectorXf div = Eigen::VectorXf::Zero(verts.size());
     for (size_t i = 0; i < verts.size(); i++) {
         float sum = 0;
         for (auto f_idx : v2f_nbrs[i]) {
@@ -192,18 +194,19 @@ std::vector<float> TriangleMesh::geodesic(const std::vector<int> &source) {
             int v1_idx = vs[ref];
             int v2_idx = vs[(ref + 1) % 3];
             int v3_idx = vs[(ref + 2) % 3];
-            arma::fvec e1 = verts[v2_idx] - verts[v1_idx];
-            arma::fvec e2 = verts[v3_idx] - verts[v2_idx];
-            arma::fvec e3 = verts[v1_idx] - verts[v3_idx];
+            auto e1 = verts[v2_idx] - verts[v1_idx];
+            auto e2 = verts[v3_idx] - verts[v2_idx];
+            auto e3 = verts[v1_idx] - verts[v3_idx];
 
-            sum += 0.5f * (calc_cot(-e2, e3) * arma::dot(e1, grad_u.row(f_idx).t()) + calc_cot(-e1, e2) * arma::dot(-e3, grad_u.row(f_idx).t()));
+            sum += 0.5f * (calc_cot(-e2, e3) * e1.dot(grad_u.row(f_idx).transpose()) + calc_cot(-e1, e2) * (-e3).dot(grad_u.row(f_idx).transpose()));
         }
         div(i) = sum;
     }
-    arma::fvec phi = arma::spsolve(L, div, "lapack");
-    auto phi_min = arma::min(phi);
-    phi.for_each( [phi_min](auto& val) { val -= phi_min; } ); 
-    std::vector<float> res{phi.begin(), phi.end()};
+    solver.compute(L);
+    Eigen::VectorXf phi = solver.solve(div);
+    auto phi_min = phi.minCoeff();
+    std::for_each(phi.data(), phi.data() + phi.size(), [phi_min](auto& val) { val -= phi_min; } ); 
+    std::vector<float> res{phi.data(), phi.data() + phi.size()};
     
     return res;
 }
