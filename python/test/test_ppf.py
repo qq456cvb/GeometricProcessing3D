@@ -14,4 +14,8 @@ if __name__ == '__main__':
     
     ppf = pygeom.PPF(0.01, 12. / 180. * np.pi, 0.1, 20. / 180. * np.pi, 5)
     ppf.setup_model(model_pc)
-    ppf.detect(scene_pc)
+    poses = ppf.detect(scene_pc)
+    for p in poses:
+        print(p.vote)
+        print(p.r)
+        print(p.t)

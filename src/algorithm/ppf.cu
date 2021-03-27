@@ -149,27 +149,6 @@ struct TransXKernel
 };
 
 
-struct Pose
-{
-    uint32_t vote = 0;
-    float r[9];
-    float t[3];
-    __host__ __device__ Pose() {}
-    __host__ __device__ Pose(uint32_t vote, float *r, float *t) {
-        this->vote = vote;
-        if (r) memcpy(this->r, r, sizeof(float) * 9);
-        if (t) memcpy(this->t, t, sizeof(float) * 3);
-    }
-    __host__ __device__ Pose(const Pose &t) {
-        this->vote = t.vote;
-        memcpy(this->r, t.r, sizeof(float) * 9);
-        memcpy(this->t, t.t, sizeof(float) * 3);
-    }
-};
-
-
-
-
 template <typename T>
 void reduce_by_key(const thrust::device_vector<T> &keys, thrust::device_vector<T> &unique_keys, thrust::device_vector<uint32_t> &counts) {
     thrust::equal_to<T> binary_pred;
@@ -252,7 +231,7 @@ void PPF::setup_model(std::shared_ptr<PointCloud> model) {
 }
 
 
-void PPF::detect(std::shared_ptr<PointCloud> scene) {
+std::vector<Pose> PPF::detect(std::shared_ptr<PointCloud> scene) {
     auto start = std::chrono::high_resolution_clock::now();
     // TODO: filter points and pairs
     // thrust::device_vector<float3> pc(reinterpret_cast<const float3*>(&(*scene->verts.begin())), reinterpret_cast<const float3*>(&(*scene->verts.end())));
@@ -489,4 +468,9 @@ void PPF::detect(std::shared_ptr<PointCloud> scene) {
     duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
     std::cout << "time3: " << duration.count() << std::endl; 
 
+    std::vector<Pose> results;
+    for (const auto &cluster: pose_clusters) {
+        results.emplace_back(cluster.first, cluster.second[0].r, cluster.second[0].t);
+    }
+    return results;
 }

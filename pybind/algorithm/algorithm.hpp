@@ -18,6 +18,13 @@ void pybind_algorithm(pybind11::module &m) {
         .def(pybind11::init<float, float, float, float, int>(), "Super fast PPF algorithm!", "dist_delta"_a, "angle_delta"_a, "cluster_dist_th"_a, "cluster_angle_th"_a, "min_vote_th"_a)
         .def("setup_model", &PPF::setup_model, "pc"_a)
         .def("detect", &PPF::detect, "pc"_a);
+
+    pybind11::class_<Pose, std::shared_ptr<Pose>>(m, "Pose")
+        .def(pybind11::init<>())
+        .def(pybind11::init<const Pose &>(), "pose"_a)
+        .def_readonly("vote", &Pose::vote)
+        .def_property_readonly("r", [](Pose &s) {return pybind11::array({3, 3}, s.r);})
+        .def_property_readonly("t", [](Pose &s) {return pybind11::array(3, s.t);});
 }
 
 #endif

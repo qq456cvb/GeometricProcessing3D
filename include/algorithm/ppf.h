@@ -7,6 +7,28 @@
 #include <cuda_runtime.h>
 #include <math.h>
 #include <Eigen/Dense>
+
+
+struct Pose
+{
+    uint32_t vote = 0;
+    float r[9];
+    float t[3];
+    __host__ __device__ Pose() {}
+    __host__ __device__ Pose(uint32_t vote, const float *r, const float *t) {
+        this->vote = vote;
+        if (r) memcpy(this->r, r, sizeof(float) * 9);
+        if (t) memcpy(this->t, t, sizeof(float) * 3);
+    }
+    __host__ __device__ Pose(const Pose &t) {
+        this->vote = t.vote;
+        memcpy(this->r, t.r, sizeof(float) * 9);
+        memcpy(this->t, t.t, sizeof(float) * 3);
+    }
+};
+
+
+
 class PPF
 {
 private:
@@ -24,7 +46,7 @@ public:
     ~PPF();
     
     void setup_model(std::shared_ptr<PointCloud> model);
-    void detect(std::shared_ptr<PointCloud> scene);
+    std::vector<Pose> detect(std::shared_ptr<PointCloud> scene);
 };
 
 
