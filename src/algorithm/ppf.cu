@@ -413,8 +413,7 @@ std::vector<Pose> PPF::detect(std::shared_ptr<PointCloud> scene) {
         int angle_bin = scene_angle_bin - model_angle_bin;
         if (angle_bin < 0) angle_bin += n_angle_bins;
 
-        if (hits_ptr[idx] & 1 << angle_bin) return;
-        hits_ptr[idx] |= 1 << angle_bin;
+        if (atomicOr((unsigned long long int *)&hits_ptr[idx], 1 << angle_bin) >> angle_bin) return;
         uint32_t model_idx = key2ppf_ptr[model_ppf_idx];
         uint32_t scene_idx = static_cast<uint32_t>(0x3FFFFFF & ppf_codes_ptr[i] >> 6);
         
@@ -615,7 +614,7 @@ std::vector<Pose> PPF::detect(std::shared_ptr<PointCloud> scene) {
         results.emplace_back(average_poses(cluster.second));
         // results.emplace_back(cluster.first, cluster.second[0].r, cluster.second[0].t);
     }
-    for (size_t i = 0; i < 20; i++) {
+    for (size_t i = 0; i < std::min(size_t(20), results.size()); i++) {
         auto &res = results[i];
         std::cout << i << ", " << res.vote << std::endl 
             << Eigen::Map<Eigen::Matrix<float, 3, 3, Eigen::RowMajor>>(res.r) << std::endl
