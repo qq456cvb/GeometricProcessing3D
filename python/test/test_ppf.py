@@ -12,10 +12,10 @@ if __name__ == '__main__':
     model_pc = pygeom.PointCloud(pygeom.VectorXYZf(a), pygeom.VectorXYZf(b))
     scene_pc = pygeom.PointCloud(pygeom.VectorXYZf(a.copy()), pygeom.VectorXYZf(b.copy()))
     
-    ppf = pygeom.PPF(0.01, 12. / 180. * np.pi, 0.1, 20. / 180. * np.pi, 5)
+    ppf = pygeom.PPF(0.1, 12. / 180. * np.pi, 0.1, 20. / 180. * np.pi, 5)
     ppf.setup_model(model_pc)
     poses = ppf.detect(scene_pc)
-    for p in poses:
+    for p in poses[:10]:
         print(p.vote)
         print(p.r)
         print(p.t)

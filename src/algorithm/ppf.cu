@@ -13,6 +13,7 @@
 #include <thrust/iterator/discard_iterator.h>
 #include <thrust/count.h>
 #include <thrust/sequence.h>
+#include <cuda/atomic>
 
 #define GPU_REDUCE
 
@@ -25,6 +26,102 @@ inline __device__ float angle_between(const float3 &a, const float3 &b) {
     return atan2(length(cross(a, b)), dot(a, b));
 }
 
+
+__device__ static float atomicMax(float* address, float val)
+{
+    int* address_as_i = (int*) address;
+    int old = *address_as_i, assumed;
+    do {
+        assumed = old;
+        old = ::atomicCAS(address_as_i, assumed,
+            __float_as_int(::fmaxf(val, __int_as_float(assumed))));
+    } while (assumed != old);
+    return __int_as_float(old);
+}
+
+
+// https://www.euclideanspace.com/maths/geometry/rotations/conversions/matrixToQuaternion/index.htm
+inline Eigen::Vector4f rot2quat(const Eigen::Matrix3f& rot) {
+  float trace = rot(0, 0) + rot(1, 1) + rot(2, 2); // I removed + 1.0f; see discussion with Ethan
+  Eigen::Vector4f q;
+  if (trace > 0) {// I changed M_EPSILON to 0
+    float s = 0.5f / sqrtf(trace+ 1.0f);
+    q(0) = 0.25f / s;
+    q(1) = ( rot(2, 1) - rot(1, 2) ) * s;
+    q(2) = ( rot(0, 2) - rot(2, 0) ) * s;
+    q(3) = ( rot(1, 0) - rot(0, 1) ) * s;
+  } else {
+    if (rot(0, 0) > rot(1, 1) && rot(0, 0) > rot(2, 2)) {
+      float s = 2.0f * sqrtf( 1.0f + rot(0, 0) - rot(1, 1) - rot(2, 2));
+      q(0) = (rot(2, 1) - rot(1, 2) ) / s;
+      q(1) = 0.25f * s;
+      q(2) = (rot(0, 1) + rot(1, 0) ) / s;
+      q(3) = (rot(0, 2) + rot(2, 0) ) / s;
+    } else if (rot(1, 1) > rot(2, 2)) {
+      float s = 2.0f * sqrtf( 1.0f + rot(1, 1) - rot(0, 0) - rot(2, 2));
+      q(0) = (rot(0, 2) - rot(2, 0) ) / s;
+      q(1) = (rot(0, 1) + rot(1, 0) ) / s;
+      q(2) = 0.25f * s;
+      q(3) = (rot(1, 2) + rot(2, 1) ) / s;
+    } else {
+      float s = 2.0f * sqrtf( 1.0f + rot(2, 2) - rot(0, 0) - rot(1, 1) );
+      q(0) = (rot(1, 0) - rot(0, 1) ) / s;
+      q(1) = (rot(0, 2) + rot(2, 0) ) / s;
+      q(2) = (rot(1, 2) + rot(2, 1) ) / s;
+      q(3) = 0.25f * s;
+    }
+  }
+  return q;
+}
+
+
+Pose average_poses(std::vector<Pose> &poses) {
+    size_t num_poses = poses.size();
+    Eigen::MatrixXf quats(4, num_poses); // eigen column major
+    int vote = 0;
+    float avg_t[3] = {0, 0, 0};
+    for (size_t i = 0; i < num_poses; i++) {
+        auto &pose = poses[i];
+        float *r = pose.r;
+        Eigen::Matrix3f rot = Eigen::Map<Eigen::Matrix<float, 3, 3, Eigen::RowMajor>>(r);
+        quats.col(i) = rot2quat(rot);
+
+        float *t = pose.t;
+        avg_t[0] += t[0];
+        avg_t[1] += t[1];
+        avg_t[2] += t[2];
+
+        vote += pose.vote;
+    }
+
+    Eigen::Matrix4f M = quats * quats.transpose();
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix4f> sol(M);
+    // std::cout << sol.eigenvalues() << std::endl;
+    Eigen::Vector4f avg_quat = sol.eigenvectors().col(3);
+
+    // convert to rotation matrix
+    float avg_r[9];
+    float q0 = avg_quat(0), q1 = avg_quat(1), q2 = avg_quat(2), q3 = avg_quat(3);
+    // First row of the rotation matrix
+    avg_r[0] = 2 * (q0 * q0 + q1 * q1) - 1;
+    avg_r[1] = 2 * (q1 * q2 - q0 * q3);
+    avg_r[2] = 2 * (q1 * q3 + q0 * q2);
+	
+    // Second row of the rotation matrix
+    avg_r[3] = 2 * (q1 * q2 + q0 * q3);
+    avg_r[4] = 2 * (q0 * q0 + q2 * q2) - 1;
+    avg_r[5] = 2 * (q2 * q3 - q0 * q1);
+	
+    // Third row of the rotation matrix
+    avg_r[6] = 2 * (q1 * q3 - q0 * q2);
+    avg_r[7] = 2 * (q2 * q3 + q0 * q1);
+    avg_r[8] = 2 * (q0 * q0 + q3 * q3) - 1;
+
+    avg_t[0] /= num_poses;
+    avg_t[1] /= num_poses;
+    avg_t[2] /= num_poses;
+    return Pose(vote, avg_r, avg_t);
+}
 
 inline __device__ uint32_t murmurppf(const uint32_t ppf[4]) {
     uint32_t h1 = 42;
@@ -80,10 +177,12 @@ __device__ uint32_t compute_ppfhash (
 }
 
 
+template <bool is_detect>
 struct PPFKernel
 {
     const float3 *pc, *pc_normal, *transforms;
     uint64_t *ppf_codes;
+    float *max_dist;
     int npoints;
     float dist_delta, angle_delta;
 
@@ -91,6 +190,7 @@ struct PPFKernel
             const thrust::device_vector<float3> &pc_normal, 
             const thrust::device_vector<float> &transforms, 
             thrust::device_vector<uint64_t> &ppf_codes, 
+            float *max_dist,
             const int npoints,
             const float dist_delta,
             const float angle_delta) : 
@@ -98,6 +198,7 @@ struct PPFKernel
         pc_normal(thrust::raw_pointer_cast(&pc_normal[0])),
         transforms((float3 *)thrust::raw_pointer_cast(&transforms[0])),
         ppf_codes(thrust::raw_pointer_cast(&ppf_codes[0])),
+        max_dist(max_dist),
         npoints(npoints),
         dist_delta(dist_delta),
         angle_delta(angle_delta) {}
@@ -105,16 +206,32 @@ struct PPFKernel
     __device__ void operator()(const uint64_t &n) const {
         int a = n / npoints;
         int b = n % npoints;
-        const float3 *t = &transforms[a * 3];  // transform point a to axis x
-        uint32_t ppf_hash = compute_ppfhash(pc[a], pc_normal[a], pc[b], pc_normal[b], dist_delta, angle_delta);
-        float angle = atan2(-dot(t[2], pc[b]), dot(t[1], pc[b])); // in PPF paper, left-handed coordinates
-        uint64_t angle_bin = static_cast<uint64_t>(angle / angle_delta);
-        uint64_t code = (static_cast<uint64_t>(ppf_hash) << 32) | 
-                (static_cast<uint64_t>(a) << 6) | 
-                angle_bin;
 
-        // Save the code
-        ppf_codes[n] = code;
+        float dist = length(pc[a] - pc[b]);
+        bool compute_code = true;
+        if constexpr (is_detect) {
+            if (dist > *max_dist) {
+                compute_code = false;
+                // printf("%f %f\n", dist, *max_dist);
+            }
+        } else {
+            atomicMax(max_dist, dist);
+        }
+
+        if (compute_code) {
+            const float3 *t = &transforms[a * 3];  // transform point a to axis x
+            uint32_t ppf_hash = compute_ppfhash(pc[a], pc_normal[a], pc[b], pc_normal[b], dist_delta, angle_delta);
+            float angle = atan2(-dot(t[2], pc[b]), dot(t[1], pc[b])); // in PPF paper, left-handed coordinates
+            uint64_t angle_bin = static_cast<uint64_t>(angle / angle_delta);
+            uint64_t code = (static_cast<uint64_t>(ppf_hash) << 32) | 
+                    (static_cast<uint64_t>(a) << 6) | 
+                    angle_bin;
+
+            // Save the code
+            ppf_codes[n] = code;
+        } else {
+            ppf_codes[n] = uint64_t(0);
+        }
     }
 };
 
@@ -174,6 +291,7 @@ PPF::PPF(float dist_delta, float angle_delta,
 
 PPF::~PPF()
 {
+    cudaFree(max_dist);
 }
 
 
@@ -209,7 +327,9 @@ void PPF::setup_model(std::shared_ptr<PointCloud> model) {
     thrust::for_each_n(thrust::counting_iterator<size_t>(0), model_pc_normal.size(), transx_kern);
 
     model_ppf_codes.resize(model->verts.size() * model->verts.size());
-    PPFKernel ppf_kern(model_pc, model_pc_normal, model_transforms, model_ppf_codes, npoints, dist_delta, angle_delta);
+    cudaMalloc(&max_dist, sizeof(float));
+    cudaMemset(max_dist, 0, sizeof(float));
+    PPFKernel<false> ppf_kern(model_pc, model_pc_normal, model_transforms, model_ppf_codes, max_dist, npoints, dist_delta, angle_delta);
     thrust::for_each_n(thrust::counting_iterator<size_t>(0), model_ppf_codes.size(), ppf_kern);
 
     thrust::sort(model_ppf_codes.begin(), model_ppf_codes.end());
@@ -238,6 +358,7 @@ std::vector<Pose> PPF::detect(std::shared_ptr<PointCloud> scene) {
     // thrust::device_vector<float3> pc_normal(reinterpret_cast<const float3*>(&(*scene->normals.begin())), reinterpret_cast<const float3*>(&(*scene->normals.end())));
     std::vector<float3> cv = convert2continuous(scene->verts);
     std::vector<float3> cn = convert2continuous(scene->normals);
+    std::cout << "copying data ...." << std::endl;
     thrust::device_vector<float3> pc = thrust::device_vector<float3>(cv.begin(), cv.end());
     thrust::device_vector<float3> pc_normal = thrust::device_vector<float3>(cn.begin(), cn.end());
 
@@ -249,8 +370,17 @@ std::vector<Pose> PPF::detect(std::shared_ptr<PointCloud> scene) {
     thrust::for_each_n(thrust::counting_iterator<size_t>(0), pc_normal.size(), transx_kern);
 
     thrust::device_vector<uint64_t> ppf_codes{npoints * npoints, 0};
-    PPFKernel ppf_kern(pc, pc_normal, transforms, ppf_codes, npoints, dist_delta, angle_delta);
+    PPFKernel<true> ppf_kern(pc, pc_normal, transforms, ppf_codes, max_dist, npoints, dist_delta, angle_delta);
     thrust::for_each_n(thrust::counting_iterator<size_t>(0), ppf_codes.size(), ppf_kern);
+
+    std::cout << "ppf before filtering, " << ppf_codes.size() << std::endl;
+    thrust::device_vector<uint64_t> ppf_codes_filtered{npoints * npoints, 0};
+    auto codes_end = thrust::copy_if(ppf_codes.begin(), ppf_codes.end(), ppf_codes_filtered.begin(), [] __device__ (const uint64_t &code) {
+        return code != 0;
+    });
+    ppf_codes_filtered.resize(thrust::distance(ppf_codes_filtered.begin(), codes_end));
+    std::swap(ppf_codes_filtered, ppf_codes);
+    std::cout << "ppf after filtering, " << ppf_codes.size() << std::endl;
 
     thrust::device_vector<uint32_t> hash_keys{ppf_codes.size(), 0};
     uint32_t *hash_keys_ptr = thrust::raw_pointer_cast(hash_keys.data());
@@ -269,7 +399,10 @@ std::vector<Pose> PPF::detect(std::shared_ptr<PointCloud> scene) {
     thrust::device_vector<uint64_t> votes{nn_idx.size(), 0};
     uint64_t *votes_ptr = thrust::raw_pointer_cast(votes.data());
 
+    std::cout << "before searching .... " << first_ppf_idx.size() << std::endl;
+    uint32_t upper_bound = static_cast<uint32_t>(first_ppf_idx.size());
     thrust::for_each_n(thrust::counting_iterator<size_t>(0), nn_idx.size(), [=] __device__ (int i) {
+        if (nn_idx_ptr[i] == upper_bound) nn_idx_ptr[i] = upper_bound - 1;
         uint32_t model_ppf_idx = first_ppf_idx_ptr[nn_idx_ptr[i]];
         uint32_t model_idx = key2ppf_ptr[model_ppf_idx];
         uint32_t scene_idx = static_cast<uint32_t>(0x3FFFFFF & ppf_codes_ptr[i] >> 6);
@@ -282,13 +415,15 @@ std::vector<Pose> PPF::detect(std::shared_ptr<PointCloud> scene) {
             static_cast<uint64_t>(angle_bin);
     });
 
+    std::cout << "after searching ...." << std::endl;
+
     thrust::sort(votes.begin(), votes.end());
 
     thrust::device_vector<uint64_t> unique_votes;
     thrust::device_vector<uint32_t> vote_counts;
     reduce_by_key<uint64_t>(votes, unique_votes, vote_counts);
 
-    printf("max votes: %u\n", thrust::reduce(vote_counts.begin(), vote_counts.end(), 0, thrust::maximum<uint32_t>()));
+    // printf("max votes: %u\n", thrust::reduce(vote_counts.begin(), vote_counts.end(), 0, thrust::maximum<uint32_t>()));
     printf("unique votes shape: %lu\n", unique_votes.size());
 
     auto stop = std::chrono::high_resolution_clock::now(); 
@@ -456,21 +591,33 @@ std::vector<Pose> PPF::detect(std::shared_ptr<PointCloud> scene) {
     });
 
     // TODO: merge cluster poses
-    printf("final pose clusters: %lu\n", pose_clusters.size());
-    for (size_t i = 0; i < std::min(pose_clusters.size(), size_t(20)); i++)
-    {
-        std::cout << i << ", " << pose_clusters[i].first << std::endl 
-            << Eigen::Map<Eigen::Matrix3f>((float *)pose_clusters[i].second[0].r).transpose() << std::endl
-            << Eigen::Map<Eigen::Vector3f>((float *)pose_clusters[i].second[0].t).transpose() << std::endl;
-    }
+    // printf("final pose clusters: %lu\n", pose_clusters.size());
+    // for (size_t i = 0; i < std::min(pose_clusters.size(), size_t(20)); i++)
+    // {
+    //     std::cout << i << ", " << pose_clusters[i].first << std::endl 
+    //         << Eigen::Map<Eigen::Matrix3f>((float *)pose_clusters[i].second[0].r).transpose() << std::endl
+    //         << Eigen::Map<Eigen::Vector3f>((float *)pose_clusters[i].second[0].t).transpose() << std::endl;
+    // }
     
     stop = std::chrono::high_resolution_clock::now(); 
     duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
     std::cout << "time3: " << duration.count() << std::endl; 
 
+    // TODO merge using gpu
     std::vector<Pose> results;
-    for (const auto &cluster: pose_clusters) {
-        results.emplace_back(cluster.first, cluster.second[0].r, cluster.second[0].t);
+    for (auto &cluster: pose_clusters) {
+        results.emplace_back(average_poses(cluster.second));
+        // results.emplace_back(cluster.first, cluster.second[0].r, cluster.second[0].t);
     }
+    for (size_t i = 0; i < 20; i++) {
+        auto &res = results[i];
+        std::cout << i << ", " << res.vote << std::endl 
+            << Eigen::Map<Eigen::Matrix<float, 3, 3, Eigen::RowMajor>>(res.r) << std::endl
+            << Eigen::Map<Eigen::Vector3f>(res.t).transpose() << std::endl << std::endl;
+    }
+        
+    stop = std::chrono::high_resolution_clock::now(); 
+    duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+    std::cout << "time4: " << duration.count() << std::endl; 
     return results;
 }

@@ -39,6 +39,7 @@ private:
     float dist_delta, angle_delta;
     float cluster_dist_th, cluster_angle_th;
     int min_vote_th;
+    float *max_dist;
 public:
     PPF(float dist_delta, float angle_delta, 
         float cluster_dist_th = 0.05f, float cluster_angle_th = 24.f / 180.f * M_PI, 

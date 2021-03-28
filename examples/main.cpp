@@ -11,6 +11,10 @@ int main(int argc, char *argv[]) {
     auto pc = reader->read_cloud("../examples/data/model_chair.pcd");
     auto scene = reader->read_cloud("../examples/data/scene_chair.pcd");
     // auto scene = pc;
+
+    // auto pc = reader->read_cloud("../../scn_matching/model_pc.pcd");
+    // auto scene = reader->read_cloud("../../scn_matching/scene_pc.pcd");
+
     Eigen::Matrix3f r;
     r << -0.78502175, -0.61736402, -0.05101488,
         -0.13302366,  0.2484333 , -0.95947152,
@@ -32,7 +36,7 @@ int main(int argc, char *argv[]) {
     }
     
 
-    auto ppf = std::make_shared<PPF>(0.01f, 12.0f / 180.0f * static_cast<float>(M_PI), 0.1f, 20.0f / 180.0f * static_cast<float>(M_PI));
+    auto ppf = std::make_shared<PPF>(0.01f, 12.0f / 180.0f * static_cast<float>(M_PI), 0.1f, 24.0f / 180.0f * static_cast<float>(M_PI));
     ppf->setup_model(pc);
     ppf->detect(scene);
     return 0;
