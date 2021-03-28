@@ -413,7 +413,7 @@ std::vector<Pose> PPF::detect(std::shared_ptr<PointCloud> scene) {
         int angle_bin = scene_angle_bin - model_angle_bin;
         if (angle_bin < 0) angle_bin += n_angle_bins;
 
-        if (atomicOr((unsigned long long int *)&hits_ptr[idx], 1 << angle_bin) >> angle_bin) return;
+        if (atomicOr((unsigned long long int *)&hits_ptr[idx], 1 << angle_bin) & 1 << angle_bin) return;
         uint32_t model_idx = key2ppf_ptr[model_ppf_idx];
         uint32_t scene_idx = static_cast<uint32_t>(0x3FFFFFF & ppf_codes_ptr[i] >> 6);
         

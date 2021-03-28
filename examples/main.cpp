@@ -9,8 +9,8 @@ int main(int argc, char *argv[]) {
     // auto dist = mesh->geodesic(std::vector{4});
 
     auto pc = reader->read_cloud("../examples/data/model_chair.pcd");
-    // auto scene = reader->read_cloud("../examples/data/scene_chair.pcd");
-    auto scene = pc;
+    auto scene = reader->read_cloud("../examples/data/scene_chair.pcd");
+    // auto scene = pc;
 
     // auto pc = reader->read_cloud("../../scn_matching/model_pc.pcd");
     // auto scene = reader->read_cloud("../../scn_matching/scene_pc.pcd");
