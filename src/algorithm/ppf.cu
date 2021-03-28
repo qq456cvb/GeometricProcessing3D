@@ -399,21 +399,36 @@ std::vector<Pose> PPF::detect(std::shared_ptr<PointCloud> scene) {
     thrust::device_vector<uint64_t> votes{nn_idx.size(), 0};
     uint64_t *votes_ptr = thrust::raw_pointer_cast(votes.data());
 
+    // Vidal's improvement on removing duplicate features
+    thrust::device_vector<uint64_t> hits{first_ppf_idx.size(), 0};
+    uint64_t *hits_ptr = thrust::raw_pointer_cast(hits.data());
     std::cout << "before searching .... " << first_ppf_idx.size() << std::endl;
     uint32_t upper_bound = static_cast<uint32_t>(first_ppf_idx.size());
     thrust::for_each_n(thrust::counting_iterator<size_t>(0), nn_idx.size(), [=] __device__ (int i) {
-        if (nn_idx_ptr[i] == upper_bound) nn_idx_ptr[i] = upper_bound - 1;
-        uint32_t model_ppf_idx = first_ppf_idx_ptr[nn_idx_ptr[i]];
-        uint32_t model_idx = key2ppf_ptr[model_ppf_idx];
-        uint32_t scene_idx = static_cast<uint32_t>(0x3FFFFFF & ppf_codes_ptr[i] >> 6);
+        uint32_t idx = nn_idx_ptr[i];
+        if (idx == upper_bound) idx = upper_bound - 1;
+        uint32_t model_ppf_idx = first_ppf_idx_ptr[idx];
         int scene_angle_bin = static_cast<int>(63 & ppf_codes_ptr[i]);
         int model_angle_bin = static_cast<int>(63 & model_ppf_codes_ptr[model_ppf_idx]);
         int angle_bin = scene_angle_bin - model_angle_bin;
         if (angle_bin < 0) angle_bin += n_angle_bins;
+
+        if (hits_ptr[idx] & 1 << angle_bin) return;
+        hits_ptr[idx] |= 1 << angle_bin;
+        uint32_t model_idx = key2ppf_ptr[model_ppf_idx];
+        uint32_t scene_idx = static_cast<uint32_t>(0x3FFFFFF & ppf_codes_ptr[i] >> 6);
+        
         votes_ptr[i] = (static_cast<uint64_t>(scene_idx) << 32) |
             (static_cast<uint64_t>(model_idx) << 6) |
             static_cast<uint64_t>(angle_bin);
     });
+
+    thrust::device_vector<uint64_t> votes_filtered{votes.size(), 0};
+    auto votes_end = thrust::copy_if(votes.begin(), votes.end(), votes_filtered.begin(), [] __device__ (const uint64_t &vote) {
+        return vote != 0;
+    });
+    votes_filtered.resize(thrust::distance(votes_filtered.begin(), votes_end));
+    std::swap(votes_filtered, votes);
 
     std::cout << "after searching ...." << std::endl;
 
@@ -589,15 +604,6 @@ std::vector<Pose> PPF::detect(std::shared_ptr<PointCloud> scene) {
     std::sort(pose_clusters.begin(), pose_clusters.end(), [](const auto &c1, const auto &c2) {
         return c1.first > c2.first;
     });
-
-    // TODO: merge cluster poses
-    // printf("final pose clusters: %lu\n", pose_clusters.size());
-    // for (size_t i = 0; i < std::min(pose_clusters.size(), size_t(20)); i++)
-    // {
-    //     std::cout << i << ", " << pose_clusters[i].first << std::endl 
-    //         << Eigen::Map<Eigen::Matrix3f>((float *)pose_clusters[i].second[0].r).transpose() << std::endl
-    //         << Eigen::Map<Eigen::Vector3f>((float *)pose_clusters[i].second[0].t).transpose() << std::endl;
-    // }
     
     stop = std::chrono::high_resolution_clock::now(); 
     duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
